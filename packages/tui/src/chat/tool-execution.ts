@@ -514,12 +514,10 @@ export class ToolExecutionComponent extends Container {
 		if (this.#editMode) this.#previewReady = Promise.withResolvers<void>();
 
 		// Always create both - contentBox for custom tools/bash/tools with renderers, contentText for other built-ins.
-		// paddingY is 1 so background-tinted blocks (custom/extension tools and the
-		// generic fallback) get top/bottom breathing room. TranscriptContainer
-		// strips PLAIN-blank edges, so framed/minimal blocks (no bg set) drop these
-		// lines and keep their tight spacing — only tinted lines survive.
-		this.#contentBox = new Box(0, 1);
-		this.#contentText = new WidthAwareText(contentWidth => this.#renderDefaultCard(contentWidth), 1, 1);
+		// paddingY is 0 so blocks render tight; the transcript's blank separator between
+		// entries is the only vertical rhythm. Background tints cover just the content rows.
+		this.#contentBox = new Box(0, 0);
+		this.#contentText = new WidthAwareText(contentWidth => this.#renderDefaultCard(contentWidth), 1, 0);
 
 		// Use Box for custom tools or built-in tools with rich renderers.
 		const hasCustomRenderer = !!(tool?.renderCall || tool?.renderResult);
