@@ -664,6 +664,19 @@ export const cfgDisplaySmoothStreaming = register({
 	},
 });
 
+export const cfgDisplayGroupConsecutiveTools = register({
+	id: "display.groupConsecutiveTools",
+	type: "boolean",
+	default: false,
+	ui: {
+		tab: "appearance",
+		group: "Display",
+		label: "Group Consecutive Tool Calls",
+		description:
+			"Show a run of consecutive built-in tool calls as one card with the latest call and a count; applies to calls rendered after the change, and a resume rebuilds history",
+	},
+});
+
 export const cfgDisplayHideToolActivity = register({
 	id: "display.hideToolActivity",
 	type: "boolean",
@@ -734,6 +747,7 @@ export const cfgDisplayAdvisorCollapsedLines = register({
 effect(
 	combine({
 		hideToolActivity: cfgDisplayHideToolActivity,
+		groupConsecutiveTools: cfgDisplayGroupConsecutiveTools,
 		readToolResultPreview: cfgReadToolResultPreview,
 		showImages: cfgTerminalShowImages,
 		cacheMissMarker: cfgDisplayCacheMissMarker,

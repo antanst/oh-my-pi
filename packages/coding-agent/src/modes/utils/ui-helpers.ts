@@ -38,7 +38,12 @@ import {
 	ReadToolGroupComponent,
 	readArgsCollapseIntoGroup,
 } from "@oh-my-pi/pi-tui/chat/read-tool-group";
-import { ReplyWriteComponent, replyDisplayMessage, toolResultReplies } from "@oh-my-pi/pi-tui/chat/reply-write";
+import { isReplyWrite, ReplyWriteComponent, replyDisplayMessage, toolResultReplies } from "@oh-my-pi/pi-tui/chat/reply-write";
+import {
+	messageBreaksToolGroup,
+	shouldGroupToolCall,
+	ToolCallGroupComponent,
+} from "@oh-my-pi/pi-tui/chat/tool-call-group";
 import { SkillMessageComponent } from "@oh-my-pi/pi-tui/chat/skill-message";
 import { StrippedToolCallsPlaceholder } from "@oh-my-pi/pi-tui/chat/stripped-tool-calls-placeholder";
 import { imageContent, textContent } from "@oh-my-pi/pi-tui/chat/transcript-entry";
@@ -106,6 +111,7 @@ import {
 	cfgComposerRecallClearedDrafts,
 	cfgDisplayCacheMissMarker,
 	cfgDisplayCollapseCompacted,
+	cfgDisplayGroupConsecutiveTools,
 	cfgDisplayShowTokenUsage,
 	cfgDisplayShowTurnTime,
 	cfgTerminalShowImages,
@@ -516,6 +522,21 @@ export class UiHelpers {
 		}
 
 		let readGroup: ReadToolGroupComponent | null = null;
+		let toolGroup: ToolCallGroupComponent | null = null;
+		const sealToolGroup = () => {
+			toolGroup?.seal();
+			toolGroup = null;
+		};
+		const ensureToolGroup = () => {
+			if (!toolGroup) {
+				toolGroup = new ToolCallGroupComponent({
+					resolveTool: name => this.ctx.viewSession.getToolByName(name),
+				});
+				toolGroup.setExpanded(this.ctx.toolOutputExpanded);
+				this.ctx.chatContainer.addChild(toolGroup);
+			}
+			return toolGroup;
+		};
 		const readToolCallArgs = new Map<string, Record<string, unknown>>();
 		const readToolCallAssistantComponents = new Map<string, AssistantMessageComponent>();
 		// Defer per-turn metrics until the turn's tool results have materialized.
@@ -642,6 +663,7 @@ export class UiHelpers {
 					readGroup?.seal();
 					readGroup = null;
 				}
+				if (messageBreaksToolGroup(message)) sealToolGroup();
 				const errorPresentation = resolveAssistantErrorPresentation(message, this.ctx.viewSession.retryAttempt);
 				const hasErrorStop = errorPresentation.kind === "full";
 				const errorMessage = hasErrorStop ? errorPresentation.text : null;
@@ -672,6 +694,7 @@ export class UiHelpers {
 					resolveWaitingPoll(renderToolName);
 
 					if (renderToolName === "read" && readArgsCollapseIntoGroup(content.arguments)) {
+						sealToolGroup();
 						if (hasErrorStop && errorMessage) {
 							if (!readGroup) {
 								readGroup = new ReadToolGroupComponent({
@@ -729,6 +752,27 @@ export class UiHelpers {
 								streamingStringKeys: streamingStringKeysForTool(renderToolName, rawInput),
 							})
 						: content.arguments;
+					const builtIn = this.ctx.viewSession.hasBuiltInTool(renderToolName);
+					if (
+						!isReplyWrite(renderToolName, renderArgs) &&
+						cfgDisplayGroupConsecutiveTools.get(this.ctx.settings) &&
+						shouldGroupToolCall(renderToolName, builtIn)
+					) {
+						const group = ensureToolGroup();
+						group.beginCall(renderToolName, renderArgs, content.id);
+						if (hasErrorStop && errorMessage) {
+							group.updateResult(
+								{ content: [{ type: "text", text: errorMessage }], isError: true },
+								false,
+								content.id,
+							);
+						} else {
+							this.ctx.pendingTools.set(content.id, group);
+						}
+						appendAssistantSegment(content.id);
+						continue;
+					}
+					sealToolGroup();
 					const component = createToolCallBlock(this.ctx, {
 						name: renderToolName,
 						args: renderArgs,
@@ -843,7 +887,7 @@ export class UiHelpers {
 					// settles, keep the card partial, parked, and in `pendingTools` so
 					// later live progress frames land on it instead of hitting the
 					// no-pending-component early return (#10447).
-					if (settled) {
+					if (settled && component instanceof ToolExecutionComponent) {
 						settleWithJobFrame(component, frame, message.toolCallId);
 					} else if (frame && isBackground) {
 						component.updateResult(frame, true, message.toolCallId);
@@ -880,6 +924,7 @@ export class UiHelpers {
 			} else {
 				readGroup?.seal();
 				readGroup = null;
+				sealToolGroup();
 				// A user prompt closes the displacement window, same as the live path.
 				if (message.role === "user") resolveWaitingPoll();
 				if (message.role === "user") resolveTodoSnapshot();
@@ -909,6 +954,7 @@ export class UiHelpers {
 		// The trailing read run has no following break to close it; seal so the
 		// rebuilt group can retire as history even with a never-persisted result.
 		readGroup?.seal();
+		sealToolGroup();
 		// A trailing waiting poll is final history on rebuild; seal it and stop
 		// its spinner timer.
 		resolveWaitingPoll();

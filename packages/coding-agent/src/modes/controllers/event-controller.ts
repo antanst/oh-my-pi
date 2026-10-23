@@ -8,12 +8,18 @@ import { extractTextContent } from "../../commit/utils";
 import { settings } from "../../config/settings";
 import { AssistantMessageComponent } from "@oh-my-pi/pi-tui/chat/assistant-message";
 import { detectCacheInvalidation } from "@oh-my-pi/pi-tui/chat/cache-invalidation-marker";
+import { chatTranscriptDisplayPreferences as displayPreferences } from "@oh-my-pi/pi-tui/chat/display-preferences";
 import {
 	groupedReadUsageCallIds,
 	ReadToolGroupComponent,
 	readArgsCollapseIntoGroup,
 	readArgsHaveTarget,
 } from "@oh-my-pi/pi-tui/chat/read-tool-group";
+import {
+	messageBreaksToolGroup,
+	shouldGroupToolCall,
+	ToolCallGroupComponent,
+} from "@oh-my-pi/pi-tui/chat/tool-call-group";
 import { RecapNotice } from "@oh-my-pi/pi-tui/chat/recap-notice";
 import {
 	isReplyWrite,
@@ -196,6 +202,7 @@ function renderArgsWithIntent(args: unknown, intent: string | undefined): unknow
 
 export class EventController {
 	#lastReadGroup: ReadToolGroupComponent | undefined = undefined;
+	#lastToolGroup: ToolCallGroupComponent | undefined = undefined;
 	/** Timestamp of the current turn's user prompt; drives the usage row's prompt→yield delta. */
 	#turnStartedAt: number | undefined = undefined;
 	/** The running turn's token and cost totals, shown under its last answer on a TSP terminal. */
@@ -507,6 +514,32 @@ export class EventController {
 		this.#lastReadGroup?.finalize();
 		this.#lastReadGroup = undefined;
 	}
+
+	#resetToolGroup(): void {
+		this.#lastToolGroup?.finalize();
+		this.#lastToolGroup = undefined;
+	}
+
+	#canGroupToolCall(renderToolName: string, args: unknown): boolean {
+		return (
+			displayPreferences.groupConsecutiveTools &&
+			// A built-in `write` to a reply URL renders as prose, not a card.
+			!isReplyWrite(renderToolName, args) &&
+			shouldGroupToolCall(renderToolName, this.ctx.viewSession.hasBuiltInTool(renderToolName))
+		);
+	}
+
+	#getToolGroup(): ToolCallGroupComponent {
+		if (!this.#lastToolGroup) {
+			const group = new ToolCallGroupComponent({
+				resolveTool: name => this.ctx.viewSession.getToolByName(name),
+			});
+			group.setExpanded(this.ctx.toolOutputExpanded);
+			this.ctx.chatContainer.addChild(group);
+			this.#lastToolGroup = group;
+		}
+		return this.#lastToolGroup;
+	}
 	/** Freeze foreground tool cards once no live agent turn can complete them. */
 	#sealAbandonedForegroundTools(): void {
 		const background = new Set<ToolExecutionHandle>();
@@ -516,7 +549,9 @@ export class EventController {
 		}
 		for (const component of this.#toolTimelineComponents.values()) {
 			if (
-				(component instanceof ToolExecutionComponent || component instanceof ReadToolGroupComponent) &&
+				(component instanceof ToolExecutionComponent ||
+					component instanceof ReadToolGroupComponent ||
+					component instanceof ToolCallGroupComponent) &&
 				!background.has(component)
 			) {
 				component.seal();
@@ -671,6 +706,9 @@ export class EventController {
 		if (component instanceof ReadToolGroupComponent) {
 			removeComponent = component.removeEntry(toolCallId);
 			if (component === this.#lastReadGroup) this.#resetReadGroup();
+		} else if (component instanceof ToolCallGroupComponent) {
+			removeComponent = component.removeEntry(toolCallId);
+			if (component === this.#lastToolGroup) this.#resetToolGroup();
 		}
 		if (removeComponent) this.ctx.chatContainer.removeChild(component);
 		this.ctx.pendingTools.delete(toolCallId);
@@ -727,6 +765,7 @@ export class EventController {
 		// A collapsed read renders into a shared group keyed by id; rename its
 		// entry so the row isn't duplicated under the new id.
 		if (pending instanceof ReadToolGroupComponent) pending.renameEntry(oldId, newId);
+		else if (pending instanceof ToolCallGroupComponent) pending.renameEntry(oldId, newId);
 		// A fast completion can land under `newId` while the card is still keyed
 		// by `oldId`. Consume it now that the card owns the final id; the normal
 		// creation path is skipped on a re-key (Codex review on #6881).
@@ -1020,6 +1059,7 @@ export class EventController {
 		}
 		this.#pendingMessageUpdate = undefined;
 		this.#resetReadGroup();
+		this.#resetToolGroup();
 		this.#lastVisibleBlockCount = 0;
 		this.#renderedCustomMessages.clear();
 		this.#lastIntent = undefined;
@@ -1191,6 +1231,7 @@ export class EventController {
 		this.#readToolCallArgs.clear();
 		this.#readToolCallAssistantComponents.clear();
 		this.#resetReadGroup();
+		this.#resetToolGroup();
 		this.#seedHeldCompletionsFromPendingResults();
 		this.#resolveDisplaceableTodo();
 		this.#lastAssistantComponent = undefined;
@@ -1239,6 +1280,7 @@ export class EventController {
 			}
 			this.#renderedCustomMessages.add(signature);
 			this.#resetReadGroup();
+			this.#resetToolGroup();
 			// A directly-invoked `/skill:` or writable-collab custom prompt is the
 			// run's initiating message (user attribution): seed the prompt→yield
 			// delta from it, the same as a user message.
@@ -1292,6 +1334,7 @@ export class EventController {
 			const signature = `${userText}\u0000${imageCount}`;
 
 			this.#resetReadGroup();
+			this.#resetToolGroup();
 			this.#resolveDisplaceablePoll();
 			this.#resolveDisplaceableTodo();
 			const wasOptimistic = this.ctx.optimisticUserMessageSignature === signature;
@@ -1338,6 +1381,7 @@ export class EventController {
 			}
 		} else if (event.message.role === "fileMention") {
 			this.#resetReadGroup();
+			this.#resetToolGroup();
 			this.ctx.addMessageToChat(event.message);
 			this.ctx.ui.requestRender();
 		} else if (event.message.role === "assistant") {
@@ -1371,6 +1415,7 @@ export class EventController {
 		}
 		this.#renderedCustomMessages.add(signature);
 		this.#resetReadGroup();
+		this.#resetToolGroup();
 		const components = this.ctx.addMessageToChat(event.message);
 		this.#scheduleIrcExpiry(signature, components);
 		this.#enforceIrcCardCap(signature);
@@ -1592,6 +1637,8 @@ export class EventController {
 				this.#resetReadGroup();
 				this.#lastVisibleBlockCount = visibleBlockCount;
 			}
+			// Thinking stays collapsed by default, so only text or an image ends a run.
+			if (messageBreaksToolGroup(this.ctx.streamingMessage)) this.#resetToolGroup();
 
 			// Content blocks stream sequentially: a toolCall block can only begin
 			// after every preceding thinking/text block has closed, and the
@@ -1620,6 +1667,7 @@ export class EventController {
 				const tool = this.ctx.viewSession.getToolByName(content.name);
 				const renderToolName = toolRenderName(content.name, tool);
 				if (renderToolName === "read") {
+					this.#resetToolGroup();
 					if (!readArgsHaveTarget(content.arguments)) {
 						// Args still streaming — defer until path is parseable so we can route to the
 						// read group (files + xd:// devices) vs ToolExecutionComponent (other internal URLs).
@@ -1682,6 +1730,16 @@ export class EventController {
 						continue;
 					}
 					this.#resolveDisplaceablePoll(renderToolName);
+					if (this.#canGroupToolCall(renderToolName, renderArgs)) {
+						const group = this.#getToolGroup();
+						group.beginCall(renderToolName, renderArgs, content.id);
+						this.ctx.pendingTools.set(content.id, group);
+						this.#toolTimelineComponents.set(content.id, group);
+						this.#toolArgsReveal.bind(content.id, group);
+						this.#settleHeldCompletionIfPresent(content.id, group);
+						continue;
+					}
+					this.#resetToolGroup();
 					this.#resetReadGroup();
 					const component = createToolCallBlock(this.ctx, {
 						name: renderToolName,
@@ -1869,7 +1927,8 @@ export class EventController {
 						if (
 							!(component instanceof ToolExecutionComponent) &&
 							!(component instanceof ReadToolGroupComponent) &&
-							!(component instanceof ReplyWriteComponent)
+							!(component instanceof ReplyWriteComponent) &&
+							!(component instanceof ToolCallGroupComponent)
 						) {
 							continue;
 						}
@@ -1988,6 +2047,7 @@ export class EventController {
 				}
 			}
 			if (renderToolName === "read" && readArgsCollapseIntoGroup(event.args)) {
+				this.#resetToolGroup();
 				this.#trackReadToolCall(event.toolCallId, event.args);
 				if (!this.#toolTimelineComponents.has(event.toolCallId)) {
 					const group = this.#getReadGroup();
@@ -2001,6 +2061,17 @@ export class EventController {
 				return;
 			}
 
+			if (this.#canGroupToolCall(renderToolName, event.args)) {
+				const group = this.#getToolGroup();
+				group.beginCall(renderToolName, event.args, event.toolCallId);
+				this.#executionStartedCallIds.add(event.toolCallId);
+				this.ctx.pendingTools.set(event.toolCallId, group);
+				this.#toolTimelineComponents.set(event.toolCallId, group);
+				this.#settleHeldCompletionIfPresent(event.toolCallId, group);
+				this.ctx.ui.requestRender();
+				return;
+			}
+			this.#resetToolGroup();
 			this.#resetReadGroup();
 			const component = createToolCallBlock(this.ctx, {
 				name: renderToolName,
@@ -2105,7 +2176,11 @@ export class EventController {
 			// partial frame: `tool_execution_end` still owns the terminal result.
 			const isTerminal = isFinalAsyncState && this.#backgroundCallIds.has(event.toolCallId);
 			if (isTerminal) {
-				settleWithJobFrame(component, event.partialResult, event.toolCallId);
+				if (component instanceof ToolExecutionComponent) {
+					settleWithJobFrame(component, event.partialResult, event.toolCallId);
+				} else {
+					component.updateResult({ ...event.partialResult, isError: false }, false, event.toolCallId);
+				}
 				this.ctx.pendingTools.delete(event.toolCallId);
 				this.#backgroundCallIds.delete(event.toolCallId);
 			} else {
@@ -2171,7 +2246,11 @@ export class EventController {
 		if (parks && settled) {
 			// The job finished before the call returned: its settled frame, not the
 			// `running` start result, is the card's final state.
-			settleWithJobFrame(component, settled, event.toolCallId);
+			if (component instanceof ToolExecutionComponent) {
+				settleWithJobFrame(component, settled, event.toolCallId);
+			} else {
+				component.updateResult({ ...settled, isError: event.isError }, false, event.toolCallId);
+			}
 			this.ctx.pendingTools.delete(event.toolCallId);
 			return;
 		}
@@ -2578,6 +2657,8 @@ export class EventController {
 		this.#postToolAssistantComponents.clear();
 		this.#toolReplyBlocks.clear();
 		this.#resetReadGroup();
+		this.#lastToolGroup?.seal();
+		this.#resetToolGroup();
 		// The turn is over: nothing else lands this turn, so the waiting poll is
 		// final history — seal it instead of letting its spinner tick while idle.
 		this.#resolveDisplaceablePoll();

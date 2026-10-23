@@ -66,6 +66,7 @@ import {
 } from "./late-diagnostics-message";
 import { groupedReadUsageCallIds, ReadToolGroupComponent, readArgsCollapseIntoGroup } from "./read-tool-group";
 import { isReplyWrite, ReplyWriteComponent, replyDisplayMessage, toolResultReplies } from "./reply-write";
+import { messageBreaksToolGroup, shouldGroupToolCall, ToolCallGroupComponent } from "./tool-call-group";
 import { SkillMessageComponent } from "./skill-message";
 import { ToolExecutionComponent, type ToolExecutionHandle } from "./tool-execution";
 import { TranscriptContainer } from "../chrome/transcript-container";
@@ -94,6 +95,7 @@ export class ChatTranscriptBuilder {
 	#pendingTools = new Map<string, ToolExecutionHandle>();
 	#readArgs = new Map<string, Record<string, unknown>>();
 	#readGroup: ReadToolGroupComponent | null = null;
+	#toolGroup: ToolCallGroupComponent | null = null;
 	#pendingUsage: Usage | undefined;
 	#pendingUsageDuration: number | undefined;
 	#pendingUsageTtft: number | undefined;
@@ -130,12 +132,14 @@ export class ChatTranscriptBuilder {
 		// (a read whose result has not arrived stays pending); otherwise the row
 		// would sit above its tools. The drain happens here at the end of the pass.
 		if (this.#readArgs.size === 0 && this.#pendingTools.size === 0) this.#flushPendingUsage();
+		this.#sealToolGroup();
 	}
 
 	/** Append newly persisted entries without rebuilding already rendered rows. */
 	append(entries: TranscriptEntry[]): void {
 		for (const entry of entries) this.#appendEntry(entry);
 		if (this.#readArgs.size === 0 && this.#pendingTools.size === 0) this.#flushPendingUsage();
+		this.#sealToolGroup();
 	}
 
 	/**
@@ -168,6 +172,7 @@ export class ChatTranscriptBuilder {
 		this.#pendingTools.clear();
 		this.#readArgs.clear();
 		this.#readGroup = null;
+		this.#toolGroup = null;
 		this.#pendingUsage = undefined;
 		this.#pendingUsageDuration = undefined;
 		this.#pendingUsageTtft = undefined;
@@ -253,6 +258,22 @@ export class ChatTranscriptBuilder {
 		return this.#readGroup;
 	}
 
+	#sealToolGroup(): void {
+		this.#toolGroup?.seal();
+		this.#toolGroup = null;
+	}
+
+	#ensureToolGroup(): ToolCallGroupComponent {
+		if (!this.#toolGroup) {
+			this.#toolGroup = new ToolCallGroupComponent({
+				resolveTool: this.#deps.getTool,
+			});
+			this.#trackExpandable(this.#toolGroup);
+			this.container.addChild(this.#toolGroup);
+		}
+		return this.#toolGroup;
+	}
+
 	// Defer per-turn metrics until the turn's tool results have materialized.
 	// Read-only invisible turns attach the metrics to their shared compact
 	// group; every other turn keeps the standalone row below its tool blocks.
@@ -295,6 +316,7 @@ export class ChatTranscriptBuilder {
 		if (message.role !== "assistant" && message.role !== "toolResult") {
 			this.#readGroup?.seal();
 			this.#readGroup = null;
+			this.#sealToolGroup();
 		}
 		switch (message.role) {
 			case "assistant":
@@ -446,6 +468,7 @@ export class ChatTranscriptBuilder {
 			this.#readGroup?.seal();
 			this.#readGroup = null;
 		}
+		if (messageBreaksToolGroup(message)) this.#sealToolGroup();
 
 		const errorPresentation = resolveAssistantErrorPresentation(message);
 		const hasErrorStop = errorPresentation.kind === "full";
@@ -472,6 +495,7 @@ export class ChatTranscriptBuilder {
 
 			const afterToolSegment = timeline.afterToolCalls.get(content.id);
 			if (content.name === "read" && readArgsCollapseIntoGroup(content.arguments)) {
+				this.#sealToolGroup();
 				if (hasErrorStop && errorMessage) {
 					const group = this.#ensureReadGroup();
 					group.updateArgs(content.arguments, content.id);
@@ -495,8 +519,25 @@ export class ChatTranscriptBuilder {
 			this.#readGroup?.seal();
 			this.#readGroup = null;
 			const builtIn = this.#deps.isBuiltInTool?.(content.name) ?? true;
+			const replyWrite = builtIn && isReplyWrite(content.name, content.arguments) === true;
+			if (!replyWrite && displayPreferences.groupConsecutiveTools && shouldGroupToolCall(content.name, builtIn)) {
+				const group = this.#ensureToolGroup();
+				group.beginCall(content.name, content.arguments, content.id);
+				if (hasErrorStop && errorMessage) {
+					group.updateResult(
+						{ content: [{ type: "text", text: errorMessage }], isError: true },
+						false,
+						content.id,
+					);
+				} else {
+					this.#pendingTools.set(content.id, group);
+				}
+				appendAssistantSegment(afterToolSegment);
+				continue;
+			}
+			this.#sealToolGroup();
 			let component: ToolExecutionHandle;
-			if (builtIn && isReplyWrite(content.name, content.arguments) === true) {
+			if (replyWrite) {
 				const reply = new ReplyWriteComponent({
 					requestRender: () => this.#deps.requestRender(),
 					imageBudget: this.#deps.ui.imageBudget,

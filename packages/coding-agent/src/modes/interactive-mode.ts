@@ -262,6 +262,7 @@ import { setTableCharts } from "@oh-my-pi/pi-tui/chat/table-chart";
 import { setTranscriptActionHandler } from "@oh-my-pi/pi-tui/chat/transcript-actions";
 import { StatusNotice } from "@oh-my-pi/pi-tui/chrome/status-notice";
 import { ReadToolGroupComponent } from "@oh-my-pi/pi-tui/chat/read-tool-group";
+import { ToolCallGroupComponent } from "@oh-my-pi/pi-tui/chat/tool-call-group";
 import { ToolExecutionComponent } from "@oh-my-pi/pi-tui/chat/tool-execution";
 import { AttachmentChipsBand } from "@oh-my-pi/pi-tui/prompt/attachment-chips";
 import type { BashExecutionComponent } from "@oh-my-pi/pi-tui/chat/bash-execution";
@@ -4162,7 +4163,9 @@ export class InteractiveMode implements InteractiveModeContext {
 			for (const child of this.chatContainer.children) {
 				if (
 					!hideToolActivity &&
-					(child instanceof ToolExecutionComponent || child instanceof ReadToolGroupComponent)
+					(child instanceof ToolExecutionComponent ||
+						child instanceof ReadToolGroupComponent ||
+						child instanceof ToolCallGroupComponent)
 				) {
 					child.setExpanded(false);
 				} else if (child instanceof AssistantMessageComponent) {

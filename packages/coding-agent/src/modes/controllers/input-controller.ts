@@ -29,6 +29,7 @@ import { extractImagePathFromText } from "@oh-my-pi/pi-tui/prompt/custom-editor"
 import { HistorySearchComponent } from "@oh-my-pi/pi-tui/overlays/history-search";
 import { HookEditorComponent } from "@oh-my-pi/pi-tui/overlays/hook-editor";
 import { ReadToolGroupComponent } from "@oh-my-pi/pi-tui/chat/read-tool-group";
+import { ToolCallGroupComponent } from "@oh-my-pi/pi-tui/chat/tool-call-group";
 import { ToolExecutionComponent } from "@oh-my-pi/pi-tui/chat/tool-execution";
 import { TreeSelectorComponent } from "@oh-my-pi/pi-tui/overlays/tree-selector";
 import {
@@ -3080,7 +3081,9 @@ export class InputController {
 		for (const child of this.ctx.chatContainer.children) {
 			if (
 				!this.ctx.hideToolActivity &&
-				(child instanceof ToolExecutionComponent || child instanceof ReadToolGroupComponent)
+				(child instanceof ToolExecutionComponent ||
+					child instanceof ReadToolGroupComponent ||
+					child instanceof ToolCallGroupComponent)
 			) {
 				child.setExpanded(false);
 			} else if (child instanceof AssistantMessageComponent) {
