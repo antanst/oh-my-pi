@@ -4,9 +4,10 @@
 #
 # Flow: fetch (including tags) -> pick the newest vX.Y.Z tag -> checkout
 # custom -> rebase onto that tag unless custom already contains it (asked
-# when interactive; aborting cleanly on conflict) -> bun install -> build
-# binary -> install to ~/.local/bin/omp. The stock binary is backed up once,
-# the first time this script runs, and never overwritten afterwards.
+# when interactive; aborting cleanly on conflict) -> skip everything when
+# this revision is already built -> bun install -> build binary -> install
+# to ~/.local/bin/omp. The stock binary is backed up once, the first
+# time this script runs, and never overwritten afterwards.
 #
 # Usage: sh scripts/local-update.sh [--non-interactive]
 #        (run from anywhere inside the repo)
@@ -93,6 +94,16 @@ for f in packages/natives/native/pi_natives.*.node; do
 		NATIVE_FOUND=1
 	fi
 done
+
+# Skip the whole build when the tree is unchanged since the last install.
+BUILT_SHA_FILE=".scratch/local-update-built-sha"
+# shortcut: rebuilds made outside this script are not recorded, the marker
+# can go stale — harmless while that binary is still installed.
+if [ "$REBASE" -eq 0 ] && [ -n "$NATIVE_FOUND" ] && [ -f "$BUILT_SHA_FILE" ] && [ "$(cat "$BUILT_SHA_FILE" 2>/dev/null)" = "$(git rev-parse HEAD)" ]; then
+	echo "==> Already built $(git rev-parse --short HEAD) — nothing to do."
+	exit 0
+fi
+
 if [ -z "$NATIVE_FOUND" ]; then
 	NATIVE_SRC=""
 	for f in "$HOME"/.omp/natives/*/pi_natives.linux-x64-modern.node; do
@@ -122,4 +133,7 @@ cp packages/coding-agent/dist/omp "$HOME/.local/bin/omp.new" || die "Failed to s
 mv -f "$HOME/.local/bin/omp.new" "$HOME/.local/bin/omp" || die "Failed to install binary."
 
 "$HOME/.local/bin/omp" --version || die "Installed binary failed to run."
+
+mkdir -p .scratch
+git rev-parse HEAD > "$BUILT_SHA_FILE" || die "Could not record built revision."
 echo "Installed. Restart omp to pick it up."
