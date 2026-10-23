@@ -9,17 +9,19 @@
 # to ~/.local/bin/omp. The stock binary is backed up once, the first
 # time this script runs, and never overwritten afterwards.
 #
-# Usage: sh scripts/local-update.sh [--non-interactive]
+# Usage: sh scripts/local-update.sh [--non-interactive] [--force]
 #        (run from anywhere inside the repo)
 
 set -u
 
 NON_INTERACTIVE=0
+FORCE=0
 for arg in "$@"; do
 	case "$arg" in
 	--non-interactive) NON_INTERACTIVE=1 ;;
+	--force) FORCE=1 ;;
 	*)
-		echo "Usage: sh scripts/local-update.sh [--non-interactive]" >&2
+		echo "Usage: sh scripts/local-update.sh [--non-interactive] [--force]" >&2
 		exit 1
 		;;
 	esac
@@ -104,7 +106,15 @@ done
 # not bump it are not rebuilt; bump the version or rebuild manually for those.
 TREE_VERSION="$(grep -m1 '"version"' packages/coding-agent/package.json | sed 's/[^0-9.]//g')"
 INSTALLED_VERSION="$("$HOME/.local/bin/omp" --version 2>/dev/null)"
+SKIP=0
 if [ "$REBASE" -eq 0 ] && [ -n "$NATIVE_FOUND" ] && [ "$INSTALLED_VERSION" = "omp/$TREE_VERSION" ]; then
+	SKIP=1
+fi
+if [ "$SKIP" -eq 1 ] && [ "$FORCE" -eq 1 ]; then
+	echo "==> --force: rebuilding despite matching version."
+	SKIP=0
+fi
+if [ "$SKIP" -eq 1 ]; then
 	echo "==> Already built $INSTALLED_VERSION — nothing to do."
 	exit 0
 fi

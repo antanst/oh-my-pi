@@ -53,7 +53,7 @@ When the newest release tag is already an ancestor of `custom`, the script SHALL
 
 ### Requirement: Build skipped when installed binary is current
 
-The script SHALL compare the version reported by `~/.local/bin/omp --version` with the version in the tree's `packages/coding-agent/package.json` and skip dependency install, build, and install when no rebase happened, the native addon is present in the repository, and both versions match. A skip prints a "nothing to do" message and exits successfully.
+The script SHALL compare the version reported by `~/.local/bin/omp --version` with the version in the tree's `packages/coding-agent/package.json` and skip dependency install, build, and install when no rebase happened, the native addon is present in the repository, and both versions match, unless `--force` is given. A skip prints a "nothing to do" message and exits successfully. With `--force`, the script SHALL rebuild even when all skip conditions hold.
 
 #### Scenario: Unchanged rerun
 
@@ -74,6 +74,11 @@ The script SHALL compare the version reported by `~/.local/bin/omp --version` wi
 
 - **WHEN** the native addon is absent from the repository
 - **THEN** the script does not skip the build, even if the versions match
+
+#### Scenario: Force flag rebuilds
+
+- **WHEN** the script runs with `--force` while all skip conditions hold
+- **THEN** the script rebuilds and reinstalls
 
 ### Requirement: Untracked files do not block the update
 
