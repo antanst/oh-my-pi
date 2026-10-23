@@ -1,14 +1,28 @@
 #!/bin/sh
-# Update the custom branch from upstream main, rebuild omp, and install it.
+# Update the custom branch from the newest upstream release tag, rebuild omp,
+# and install it.
 #
-# Flow: fetch -> fast-forward local main to upstream/main -> rebase custom
-# onto main (aborting cleanly on conflict) -> bun install -> build binary ->
-# install to ~/.local/bin/omp. The stock binary is backed up once, the first
-# time this script runs, and never overwritten afterwards.
+# Flow: fetch (including tags) -> pick the newest vX.Y.Z tag -> checkout
+# custom -> rebase onto that tag unless custom already contains it (asked
+# when interactive; aborting cleanly on conflict) -> bun install -> build
+# binary -> install to ~/.local/bin/omp. The stock binary is backed up once,
+# the first time this script runs, and never overwritten afterwards.
 #
-# Usage: sh scripts/local-update.sh   (run from anywhere inside the repo)
+# Usage: sh scripts/local-update.sh [--non-interactive]
+#        (run from anywhere inside the repo)
 
 set -u
+
+NON_INTERACTIVE=0
+for arg in "$@"; do
+	case "$arg" in
+	--non-interactive) NON_INTERACTIVE=1 ;;
+	*)
+		echo "Usage: sh scripts/local-update.sh [--non-interactive]" >&2
+		exit 1
+		;;
+	esac
+done
 
 die() {
 	echo "$*" >&2
@@ -25,25 +39,51 @@ fi
 
 START_BRANCH="$(git branch --show-current 2>/dev/null)"
 
-echo "==> Fetching origin and upstream"
+echo "==> Fetching origin and upstream (with tags)"
 git fetch origin || die "git fetch origin failed."
-git fetch upstream || die "git fetch upstream failed."
+git fetch --tags upstream || die "git fetch upstream failed."
 
-# Fast-forward local main to upstream/main; refuses if local main diverged.
-git fetch upstream main:main || die "Could not fast-forward local main to upstream/main — sync your fork first."
+# Newest release tag; anything not matching vX.Y.Z exactly is ignored.
+TAG="$(git tag -l --sort=-v:refname | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | head -1)"
 
 if ! git show-ref --verify --quiet refs/heads/custom; then
 	die "Branch 'custom' not found — create it first (git checkout -b custom v18.12.6)."
 fi
 
-echo "==> Rebasing custom onto main"
+echo "==> Checking out custom"
 git checkout custom || die "Cannot check out custom."
-if ! git rebase main; then
-	git rebase --abort
-	if [ -n "$START_BRANCH" ]; then
-		git checkout "$START_BRANCH" 2>/dev/null
+
+# Rebase only when the newest release tag is not already contained.
+REBASE=0
+DECLINED=0
+if [ -n "$TAG" ] && ! git merge-base --is-ancestor "$TAG" custom; then
+	REBASE=1
+fi
+
+if [ "$REBASE" -eq 1 ] && [ "$NON_INTERACTIVE" -eq 0 ]; then
+	printf "Newer release tag available: %s\nRebase custom onto it? [Y/n] " "$TAG"
+	ANSWER=""
+	read -r ANSWER
+	case "$ANSWER" in
+	n*|N*) REBASE=0; DECLINED=1 ;;
+	esac
+fi
+
+if [ "$REBASE" -eq 1 ]; then
+	echo "==> Rebasing custom onto $TAG"
+	if ! git rebase "$TAG"; then
+		git rebase --abort
+		if [ -n "$START_BRANCH" ]; then
+			git checkout "$START_BRANCH" 2>/dev/null
+		fi
+		die "Rebase conflicted — aborted, 'custom' untouched. Resolve against $TAG manually."
 	fi
-	die "Rebase conflicted — aborted, 'custom' untouched. Resolve against main manually."
+elif [ "$DECLINED" -eq 1 ]; then
+	echo "==> Declined — skipping rebase."
+elif [ -n "$TAG" ]; then
+	echo "==> custom already contains $TAG — no rebase."
+else
+	echo "No release tags found — skipping rebase." >&2
 fi
 
 # The native addon is not committed; copy the newest installed one if missing.
