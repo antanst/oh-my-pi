@@ -88,19 +88,32 @@ the run. A run with one call SHALL NOT show a count.
 
 ### Requirement: Expanded group lists each call
 
-Expanded through the global tool-output toggle (Ctrl+O), the group card SHALL show
-one row per call in run order, with each call summary. Collapsing SHALL restore the
-collapsed head text.
+The group card SHALL expand and collapse through its own action,
+`app.tools.toggleGroupExpansion` (default Ctrl+X), independent of tool-output
+expansion (Ctrl+O). Expanded, it SHALL show one row per call in run order, with each
+call summary. Collapsing SHALL restore the collapsed head text.
 
 #### Scenario: Expand a run
 
-- **WHEN** the user expands tool output on a group card that holds three calls
-- **THEN** the card shows three rows, one per call, in order
+- **WHEN** the user presses Ctrl+X on a transcript with a group card that holds three
+  calls
+- **THEN** every group card shows three rows, one per call, in order
 
 #### Scenario: Collapse a run
 
-- **WHEN** the user collapses tool output on an expanded group card
-- **THEN** the card shows only the latest call summary and the count
+- **WHEN** the user presses Ctrl+X again
+- **THEN** every group card shows only the latest call summary and the count
+
+#### Scenario: Tool output expansion is separate
+
+- **WHEN** the user presses Ctrl+O on a transcript with a collapsed group card
+- **THEN** tool-output expansion changes per-call cards, and the group card stays
+  collapsed
+
+#### Scenario: New run follows the current state
+
+- **WHEN** grouped calls are expanded and a new group card appears
+- **THEN** the new card is expanded too
 
 ### Requirement: Hidden activity takes precedence
 

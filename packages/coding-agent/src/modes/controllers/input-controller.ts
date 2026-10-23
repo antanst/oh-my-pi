@@ -317,6 +317,7 @@ export class InputController {
 	#btwCopyListenerInstalled = false;
 	#globalEditorActionsListenerInstalled = false;
 	#expandToolsListenerInstalled = false;
+	#groupExpandListenerInstalled = false;
 	#inlineMouseListenerInstalled = false;
 	#linkHintListenerInstalled = false;
 
@@ -512,6 +513,17 @@ export class InputController {
 					return { consume: true };
 				}
 				this.toggleToolOutputExpansion();
+				return { consume: true };
+			});
+		}
+		if (!this.#groupExpandListenerInstalled) {
+			this.#groupExpandListenerInstalled = true;
+			// `app.tools.toggleGroupExpansion` (Ctrl+X) controls group rows only.
+			// Ctrl+O keeps its own meaning: tool-output expansion.
+			this.ctx.ui.addInputListener(data => {
+				if (!this.ctx.keybindings.matches(data, "app.tools.toggleGroupExpansion")) return undefined;
+				if (this.ctx.ui.hasOverlay()) return undefined;
+				this.toggleToolGroupExpansion();
 				return { consume: true };
 			});
 		}
@@ -3068,6 +3080,19 @@ export class InputController {
 		}
 		this.setToolsExpanded(!this.ctx.toolOutputExpanded);
 		this.ctx.showStatus(`Tool output expansion: ${this.ctx.toolOutputExpanded ? "enabled" : "disabled"}`);
+	}
+
+	toggleToolGroupExpansion(): void {
+		if (this.ctx.hideToolActivity) {
+			this.ctx.showStatus("Tool activity is hidden — show it before expanding grouped calls");
+			return;
+		}
+		this.ctx.toolGroupExpanded = !this.ctx.toolGroupExpanded;
+		for (const child of this.ctx.chatContainer.children) {
+			if (child instanceof ToolCallGroupComponent) child.setGroupExpanded(this.ctx.toolGroupExpanded);
+		}
+		this.ctx.ui.requestRender();
+		this.ctx.showStatus(`Grouped tool calls: ${this.ctx.toolGroupExpanded ? "expanded" : "collapsed"}`);
 	}
 
 	toggleToolActivityVisibility(): void {

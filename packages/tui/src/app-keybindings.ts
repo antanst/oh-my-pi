@@ -36,6 +36,7 @@ interface AppKeybindings {
 	"app.model.select": true;
 	"app.model.selectTemporary": true;
 	"app.tools.expand": true;
+	"app.tools.toggleGroupExpansion": true;
 	"app.tools.toggleVisibility": true;
 	"app.ask.hide": true;
 	"app.approval.approve": true;
@@ -139,6 +140,10 @@ export const KEYBINDINGS = {
 	"app.tools.expand": {
 		defaultKeys: "ctrl+o",
 		description: "Expand tools",
+	},
+	"app.tools.toggleGroupExpansion": {
+		defaultKeys: "ctrl+x",
+		description: "Expand grouped tool calls",
 	},
 	"app.tools.toggleVisibility": {
 		defaultKeys: "ctrl+shift+o",

@@ -53,8 +53,10 @@ Non-Goals:
 - **Group lifecycle mirrors the read group.** The builder/controller owns the active
   group, updates it by `toolCallId`, finalizes on a break, and seals at turn end. A
   late result updates its entry by id and bumps the block version.
-- **Expansion uses the existing global toggle.** The group takes part in the same
-  `setExpanded` walk; expanded renders one row per call in run order.
+- **Group expansion has its own key and state.** `app.tools.toggleGroupExpansion`
+  (default Ctrl+X) flips `toolGroupExpanded` on the UI context and applies it to every
+  group card; new cards read the same state. `setExpanded` stays a no-op so the
+  Ctrl+O tool-output walk never changes group rows.
 - **Setting plumbing.** Register `display.groupConsecutiveTools` in
   `packages/coding-agent/src/modes/settings.ts`, add it to
   `ChatTranscriptDisplayPreferences`, and include it in the display-preferences

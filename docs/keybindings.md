@@ -35,6 +35,7 @@ app.history.search: []
 | `app.plan.toggle`            | `Alt+Shift+P`                                                         | Toggle plan mode                                                                                                                                       |
 | `app.history.search`         | `Ctrl+R`                                                              | Search prompt history                                                                                                                                  |
 | `app.tools.expand`           | `Ctrl+O`                                                              | Toggle tool-output expansion                                                                                                                           |
+| `app.tools.toggleGroupExpansion` | `Ctrl+X` | Expand or collapse grouped tool calls (one row per call) |
 | `app.tools.toggleVisibility` | `Ctrl+Shift+O`                                                        | Show or hide tool activity                                                                                                                             |
 | `app.links.hint`             | `Alt+O`                                                               | Tag each [extension link](./extensions.md#extension-link-schemes) on screen; type a tag to activate that link, `Esc` cancels                           |
 | `app.ask.hide`               | `Alt+H`                                                               | Hide a pending `ask` question to one line (the Hide button in Tern); the same key, `Enter`, or Show brings it back                                     |
@@ -59,7 +60,6 @@ app.history.search: []
 | `app.session.unpin`          | `Alt+Shift+K`                                                         | Unpin the selected session in the resume picker                                                                                                        |
 | `app.tree.previousBranch`    | Unbound                                                               | Jump to the previous visible branch in `/tree` ([details](./tree.md))                                                                                  |
 | `app.tree.nextBranch`        | Unbound                                                               | Jump to the next visible branch in `/tree` ([details](./tree.md))                                                                                      |
-
 To disable push-to-talk while keeping speech-to-text available through a separate toggle binding:
 
 ```yaml

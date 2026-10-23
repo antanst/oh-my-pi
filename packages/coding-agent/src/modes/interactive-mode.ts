@@ -1375,6 +1375,7 @@ export class InteractiveMode implements InteractiveModeContext {
 	initialChatRendered = false;
 	isBashMode = false;
 	toolOutputExpanded = false;
+	toolGroupExpanded = false;
 	hideToolActivity = false;
 	todoExpanded = false;
 	planModeEnabled = false;

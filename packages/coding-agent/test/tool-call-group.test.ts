@@ -3,6 +3,7 @@ import type { AgentMessage } from "@oh-my-pi/pi-agent-core";
 import type { AssistantMessage } from "@oh-my-pi/pi-ai";
 import { resetSettingsForTest, Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { EventController } from "@oh-my-pi/pi-coding-agent/modes/controllers/event-controller";
+import { InputController } from "@oh-my-pi/pi-coding-agent/modes/controllers/input-controller";
 import { UiHelpers } from "@oh-my-pi/pi-coding-agent/modes/utils/ui-helpers";
 import type { SessionContext } from "@oh-my-pi/pi-coding-agent/session/session-context";
 import type { Component } from "@oh-my-pi/pi-tui";
@@ -119,11 +120,41 @@ describe("ToolCallGroupComponent", () => {
 		const group = new ToolCallGroupComponent();
 		group.beginCall("bash", { command: "echo one" }, "c1");
 		group.beginCall("grep", { pattern: "alpha", path: "src" }, "c2");
-		group.setExpanded(true);
+		group.setGroupExpanded(true);
 		const rows = plain(group).split("\n");
 		expect(rows[0]).toContain("$ echo one");
 		expect(rows[1]).toContain("Grep alpha · src");
 		expect(rows).toHaveLength(2);
+	});
+
+	it("ignores the host tool-output toggle", () => {
+		const group = new ToolCallGroupComponent();
+		group.beginCall("bash", { command: "echo one" }, "c1");
+		group.beginCall("bash", { command: "echo two" }, "c2");
+		group.setExpanded(true);
+		expect(plain(group).split("\n")).toHaveLength(1);
+		expect(plain(group)).toContain("+1");
+	});
+
+	it("expands through its own key action", () => {
+		const ctx = createInteractiveModeContext();
+		const controller = new InputController(ctx);
+		const group = new ToolCallGroupComponent();
+		group.beginCall("bash", { command: "echo one" }, "c1");
+		group.beginCall("bash", { command: "echo two" }, "c2");
+		ctx.chatContainer.addChild(group);
+
+		controller.setToolsExpanded(true);
+		expect(plain(group).split("\n")).toHaveLength(1);
+
+		controller.toggleToolGroupExpansion();
+		expect(ctx.toolGroupExpanded).toBe(true);
+		expect(plain(group).split("\n")).toHaveLength(2);
+		expect(plain(group)).toContain("$ echo one");
+
+		controller.toggleToolGroupExpansion();
+		expect(ctx.toolGroupExpanded).toBe(false);
+		expect(plain(group).split("\n")).toHaveLength(1);
 	});
 
 	it("marks failed calls without hiding the error", () => {
@@ -131,7 +162,7 @@ describe("ToolCallGroupComponent", () => {
 		group.beginCall("bash", { command: "false" }, "c1");
 		group.updateResult({ content: [{ type: "text", text: "exit code 1" }], isError: true }, false, "c1");
 		expect(plain(group)).toContain("✗");
-		group.setExpanded(true);
+		group.setGroupExpanded(true);
 		expect(plain(group)).toContain("exit code 1");
 	});
 
@@ -147,7 +178,7 @@ describe("ToolCallGroupComponent", () => {
 		group.beginCall("bash", { command: "echo one" }, "c1");
 		group.beginCall("bash", { command: "echo two" }, "c2");
 		group.renameEntry("c1", "c1b");
-		group.setExpanded(true);
+		group.setGroupExpanded(true);
 		expect(plain(group).split("\n")[0]).toContain("$ echo one");
 		expect(group.removeEntry("c1b")).toBe(false);
 		expect(plain(group)).toContain("$ echo two");

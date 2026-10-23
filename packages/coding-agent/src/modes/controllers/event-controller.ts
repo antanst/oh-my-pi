@@ -534,7 +534,7 @@ export class EventController {
 			const group = new ToolCallGroupComponent({
 				resolveTool: name => this.ctx.viewSession.getToolByName(name),
 			});
-			group.setExpanded(this.ctx.toolOutputExpanded);
+			group.setGroupExpanded(this.ctx.toolGroupExpanded);
 			this.ctx.chatContainer.addChild(group);
 			this.#lastToolGroup = group;
 		}

@@ -40,11 +40,18 @@
 - [x] 4.2 Add a parity test: the same messages through the transcript builder and
   through the replay path produce the same group card text and row count.
 
-## 5. Integration
+## 5. Independent group expansion
 
-- [x] 5.1 PTY smoke with the source CLI (`bun --cwd=packages/coding-agent src/cli.ts`):
+- [x] 5.1 Register `app.tools.toggleGroupExpansion` with the free Ctrl+X default,
+  share `toolGroupExpanded` through the UI context, and toggle every group card from
+  the input controller. Verify with tests that Ctrl+O leaves groups collapsed and the
+  new action expands and collapses them.
+
+## 6. Integration
+
+- [x] 6.1 PTY smoke with the source CLI (`bun --cwd=packages/coding-agent src/cli.ts`):
   enable the setting, resume a run of consecutive `bash` calls, confirm one card with
   the latest command and `+N`, and confirm Ctrl+O shows one row per call.
-- [x] 5.2 In the same smoke, confirm that `display.hideToolActivity` hides the card and
+- [x] 6.2 In the same smoke, confirm that `display.hideToolActivity` hides the card and
   that a resumed session renders the same card. Text splitting is covered by the
   replay tests.

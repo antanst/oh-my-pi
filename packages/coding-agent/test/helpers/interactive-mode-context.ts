@@ -245,6 +245,7 @@ export function createInteractiveModeContext(overrides: ContextOverrides = {}): 
 		isInitialized: true,
 		initialChatRendered: true,
 		toolOutputExpanded: false,
+		toolGroupExpanded: false,
 		hideToolActivity: false,
 		hideThinkingBlock: false,
 		get effectiveHideThinkingBlock() {

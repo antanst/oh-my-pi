@@ -241,7 +241,13 @@ export class ToolCallGroupComponent extends Container implements ToolExecutionHa
 
 	setExecutionStarted(_toolCallId?: string): void {}
 
-	setExpanded(expanded: boolean): void {
+	/**
+	 * The host's Ctrl+O controls tool-output expansion, not group rows. Group
+	 * rows use `setGroupExpanded` (app.tools.toggleGroupExpansion).
+	 */
+	setExpanded(_expanded: boolean): void {}
+
+	setGroupExpanded(expanded: boolean): void {
 		if (this.#expanded !== expanded) this.#blockVersion++;
 		this.#expanded = expanded;
 		this.#updateDisplay();
