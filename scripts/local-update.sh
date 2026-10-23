@@ -5,7 +5,7 @@
 # Flow: fetch (including tags) -> pick the newest vX.Y.Z tag -> checkout
 # custom -> rebase onto that tag unless custom already contains it (asked
 # when interactive; aborting cleanly on conflict) -> skip everything when
-# this revision is already built -> bun install -> build binary -> install
+# the installed omp already matches this version -> bun install -> build
 # to ~/.local/bin/omp. The stock binary is backed up once, the first
 # time this script runs, and never overwritten afterwards.
 #
@@ -33,7 +33,11 @@ die() {
 ROOT="$(git rev-parse --show-toplevel 2>/dev/null)" || die "Not inside a git repository."
 cd "$ROOT" || die "Cannot enter repository root."
 
-DIRTY="$(git status --porcelain)" || die "git status failed."
+# The binary build populates the embedded stats bundle; restore the checked-in
+# empty state on every exit so the next run is never flagged dirty.
+trap 'git checkout -- packages/stats/src/embedded-client.generated.txt 2>/dev/null' EXIT
+
+DIRTY="$(git status --porcelain --untracked-files=no)" || die "git status failed."
 if [ -n "$DIRTY" ]; then
 	die "Working tree is dirty — commit or stash first."
 fi
@@ -95,12 +99,13 @@ for f in packages/natives/native/pi_natives.*.node; do
 	fi
 done
 
-# Skip the whole build when the tree is unchanged since the last install.
-BUILT_SHA_FILE=".scratch/local-update-built-sha"
-# shortcut: rebuilds made outside this script are not recorded, the marker
-# can go stale — harmless while that binary is still installed.
-if [ "$REBASE" -eq 0 ] && [ -n "$NATIVE_FOUND" ] && [ -f "$BUILT_SHA_FILE" ] && [ "$(cat "$BUILT_SHA_FILE" 2>/dev/null)" = "$(git rev-parse HEAD)" ]; then
-	echo "==> Already built $(git rev-parse --short HEAD) — nothing to do."
+# Skip the whole build when the installed binary already matches this version.
+# shortcut: the version is package.json-level — local source commits that do
+# not bump it are not rebuilt; bump the version or rebuild manually for those.
+TREE_VERSION="$(grep -m1 '"version"' packages/coding-agent/package.json | sed 's/[^0-9.]//g')"
+INSTALLED_VERSION="$("$HOME/.local/bin/omp" --version 2>/dev/null)"
+if [ "$REBASE" -eq 0 ] && [ -n "$NATIVE_FOUND" ] && [ "$INSTALLED_VERSION" = "omp/$TREE_VERSION" ]; then
+	echo "==> Already built $INSTALLED_VERSION — nothing to do."
 	exit 0
 fi
 
@@ -133,7 +138,4 @@ cp packages/coding-agent/dist/omp "$HOME/.local/bin/omp.new" || die "Failed to s
 mv -f "$HOME/.local/bin/omp.new" "$HOME/.local/bin/omp" || die "Failed to install binary."
 
 "$HOME/.local/bin/omp" --version || die "Installed binary failed to run."
-
-mkdir -p .scratch
-git rev-parse HEAD > "$BUILT_SHA_FILE" || die "Could not record built revision."
 echo "Installed. Restart omp to pick it up."
