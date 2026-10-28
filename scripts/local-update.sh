@@ -93,7 +93,7 @@ else
 	echo "No release tags found — skipping rebase." >&2
 fi
 
-# The native addon is not committed; copy the newest installed one if missing.
+# The native addon is not committed; a missing addon requires a build.
 NATIVE_FOUND=""
 for f in packages/natives/native/pi_natives.*.node; do
 	if [ -e "$f" ]; then
@@ -119,23 +119,12 @@ if [ "$SKIP" -eq 1 ]; then
 	exit 0
 fi
 
-if [ -z "$NATIVE_FOUND" ]; then
-	NATIVE_SRC=""
-	for f in "$HOME"/.omp/natives/*/pi_natives.linux-x64-modern.node; do
-		if [ -e "$f" ]; then
-			NATIVE_SRC="$f"
-		fi
-	done
-	if [ -z "$NATIVE_SRC" ]; then
-		echo "No native addon found in ~/.omp/natives — the build may fail or miss natives." >&2
-	else
-		echo "==> Copying native addon: $NATIVE_SRC"
-		cp "$NATIVE_SRC" packages/natives/native/ || die "Failed to copy native addon."
-	fi
-fi
-
 echo "==> bun install"
 bun install || die "bun install failed."
+
+# A cached addon can report the same release but lack exports used by this tree.
+echo "==> Building native addon"
+bun run build:native || die "Native build failed."
 
 echo "==> Building binary"
 (cd packages/coding-agent && bun scripts/build-binary.ts) || die "Build failed."
