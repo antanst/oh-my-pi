@@ -533,6 +533,7 @@ export class UiHelpers {
 					resolveTool: name => this.ctx.viewSession.getToolByName(name),
 				});
 				toolGroup.setGroupExpanded(this.ctx.toolGroupExpanded);
+				toolGroup.setExpanded(this.ctx.toolOutputExpanded);
 				this.ctx.chatContainer.addChild(toolGroup);
 			}
 			return toolGroup;

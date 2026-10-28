@@ -89,6 +89,20 @@ function plain(component: Component): string {
 	return Bun.stripANSI(component.render(120).join("\n"));
 }
 
+// A tool whose renderResult echoes each result text line verbatim — the staged
+// form the group card must show unchanged.
+function stagedResultTool(): never {
+	return {
+		renderResult(result: { content?: Array<{ type: string; text?: string }> }) {
+			const lines = (result.content ?? [])
+				.filter(part => part.type === "text")
+				.map(part => part.text ?? "")
+				.filter(line => line.length > 0);
+			return { render: () => lines, invalidate() {} };
+		},
+	} as never;
+}
+
 describe("ToolCallGroupComponent", () => {
 	beforeAll(async () => {
 		resetSettingsForTest();
@@ -127,7 +141,7 @@ describe("ToolCallGroupComponent", () => {
 		expect(rows).toHaveLength(2);
 	});
 
-	it("ignores the host tool-output toggle", () => {
+	it("stays compact with no results even when output expansion is on", () => {
 		const group = new ToolCallGroupComponent();
 		group.beginCall("bash", { command: "echo one" }, "c1");
 		group.beginCall("bash", { command: "echo two" }, "c2");
@@ -155,6 +169,20 @@ describe("ToolCallGroupComponent", () => {
 		controller.toggleToolGroupExpansion();
 		expect(ctx.toolGroupExpanded).toBe(false);
 		expect(plain(group).split("\n")).toHaveLength(1);
+	});
+
+	it("reveals results through the host tool-output toggle", () => {
+		const ctx = createInteractiveModeContext();
+		const controller = new InputController(ctx);
+		const group = new ToolCallGroupComponent({ resolveTool: () => stagedResultTool() });
+		group.beginCall("bash", { command: "echo one" }, "c1");
+		group.updateResult({ content: [{ type: "text", text: "out-one" }] }, false, "c1");
+		ctx.chatContainer.addChild(group);
+
+		controller.setToolsExpanded(true);
+		expect(plain(group)).toContain("out-one");
+		controller.setToolsExpanded(false);
+		expect(plain(group)).not.toContain("out-one");
 	});
 
 	it("marks failed calls without hiding the error", () => {
@@ -185,15 +213,77 @@ describe("ToolCallGroupComponent", () => {
 		expect(group.removeEntry("c2")).toBe(true);
 	});
 
-	it("attaches a late result after the run is sealed", () => {
-		const group = new ToolCallGroupComponent();
+	it("renders a late result after the run is sealed", () => {
+		const group = new ToolCallGroupComponent({ resolveTool: () => stagedResultTool() });
 		group.beginCall("bash", { command: "sleep 1" }, "c1");
 		group.finalize();
 		group.seal();
-		group.updateResult({ content: [{ type: "text", text: "done late" }], isError: false }, false, "c1");
-		expect(plain(group)).not.toContain("✗");
-		group.updateResult({ content: [{ type: "text", text: "late failure" }], isError: true }, false, "c1");
-		expect(plain(group)).toContain("✗");
+		group.setExpanded(true);
+		group.updateResult({ content: [{ type: "text", text: "late-out" }] }, false, "c1");
+		expect(plain(group)).toContain("late-out");
+	});
+
+	it("shows staged renderer output unchanged, including errors", () => {
+		const staged = {
+			renderResult: () => ({ render: () => ["  indented", "tail"], invalidate() {} }),
+		};
+		const group = new ToolCallGroupComponent({ resolveTool: () => staged as never });
+		group.beginCall("bash", { command: "echo one" }, "c1");
+		group.updateResult({ content: [{ type: "text", text: "raw" }], isError: true }, false, "c1");
+		group.setExpanded(true);
+		const lines = plain(group).split("\n");
+		expect(lines[0]).toContain("✗");
+		expect(lines[1]).toBe("  indented");
+		expect(lines[2]).toBe("tail");
+	});
+
+	it("renders the latest result under the collapsed head when output expansion is on", () => {
+		const group = new ToolCallGroupComponent({ resolveTool: () => stagedResultTool() });
+		group.beginCall("bash", { command: "echo one" }, "c1");
+		group.updateResult({ content: [{ type: "text", text: "out-one" }] }, false, "c1");
+		group.beginCall("bash", { command: "echo two" }, "c2");
+		group.updateResult({ content: [{ type: "text", text: "out-two" }] }, false, "c2");
+		group.setExpanded(true);
+		const lines = plain(group).split("\n");
+		expect(lines[0]).toContain("$ echo two");
+		expect(lines[1]).toBe("out-two");
+		expect(lines).not.toContain("out-one");
+		group.setExpanded(false);
+		expect(plain(group)).not.toContain("out-two");
+		expect(plain(group).split("\n")).toHaveLength(1);
+	});
+
+	it("renders each row's result when row-expanded with output expansion on", () => {
+		const group = new ToolCallGroupComponent({ resolveTool: () => stagedResultTool() });
+		group.beginCall("bash", { command: "echo one" }, "c1");
+		group.updateResult({ content: [{ type: "text", text: "out-one" }] }, false, "c1");
+		group.beginCall("bash", { command: "echo two" }, "c2");
+		group.updateResult({ content: [{ type: "text", text: "out-two" }] }, false, "c2");
+		group.setGroupExpanded(true);
+		group.setExpanded(true);
+		const lines = plain(group).split("\n");
+		expect(lines[0]).toContain("$ echo one");
+		expect(lines[1]).toBe("out-one");
+		expect(lines[2]).toContain("$ echo two");
+		expect(lines[3]).toBe("out-two");
+	});
+
+	it("shows the single call's result under the collapsed head", () => {
+		const group = new ToolCallGroupComponent({ resolveTool: () => stagedResultTool() });
+		group.beginCall("bash", { command: "echo one" }, "c1");
+		group.updateResult({ content: [{ type: "text", text: "out-one" }] }, false, "c1");
+		group.setExpanded(true);
+		const lines = plain(group).split("\n");
+		expect(lines[0]).toContain("$ echo one");
+		expect(lines[1]).toBe("out-one");
+	});
+
+	it("keeps summaries only when output expansion is off", () => {
+		const group = new ToolCallGroupComponent({ resolveTool: () => stagedResultTool() });
+		group.beginCall("bash", { command: "echo one" }, "c1");
+		group.updateResult({ content: [{ type: "text", text: "out-one" }] }, false, "c1");
+		expect(plain(group).split("\n")).toHaveLength(1);
+		expect(plain(group)).not.toContain("out-one");
 	});
 
 	it("uses the fallback summary when no custom renderer exists", () => {
@@ -304,6 +394,57 @@ describe("consecutive tool groups in transcripts", () => {
 		);
 		expect(groups).toHaveLength(1);
 		expect(plain(groups[0]!)).toContain("$ echo two");
+	});
+
+	it("renders results in replayed groups when tool output is expanded", () => {
+		const messages = [...bashTurn("b1", "echo one", "out-one"), ...bashTurn("b2", "echo two", "out-two")];
+		const ctx = createInteractiveModeContext({
+			settings: Settings.isolated({ "display.groupConsecutiveTools": true }),
+			toolOutputExpanded: true,
+			viewSession: { getToolByName: () => stagedResultTool() },
+		});
+		const helpers = new UiHelpers(ctx);
+		ctx.addMessageToChat = helpers.addMessageToChat.bind(helpers);
+		helpers.renderSessionContext({ messages } as SessionContext);
+		const groups = ctx.chatContainer.children.filter(
+			(child): child is ToolCallGroupComponent => child instanceof ToolCallGroupComponent,
+		);
+		expect(groups).toHaveLength(1);
+		const rendered = plain(groups[0]!);
+		expect(rendered).toContain("$ echo two");
+		expect(rendered).toContain("out-two");
+		expect(rendered).not.toContain("out-one");
+	});
+
+	it("renders results in builder-rebuilt groups when expanded", () => {
+		const messages = [...bashTurn("b1", "echo one", "out-one"), ...bashTurn("b2", "echo two", "out-two")];
+		const previous = chatTranscriptDisplayPreferences.groupConsecutiveTools;
+		setChatTranscriptDisplayPreferences({ groupConsecutiveTools: true });
+		try {
+			const builder = new ChatTranscriptBuilder({
+				ui: { requestRender() {}, requestComponentRender() {} } as never,
+				getTool: () => stagedResultTool(),
+				cwd: process.cwd(),
+				requestRender() {},
+			});
+			builder.setExpanded(true);
+			builder.rebuild(
+				messages.map((message, i) => ({
+					type: "message" as const,
+					id: `m${i}`,
+					parentId: i ? `m${i - 1}` : null,
+					timestamp: new Date(0).toISOString(),
+					message,
+				})),
+			);
+			const groups = builder.container.children.filter(
+				(child): child is ToolCallGroupComponent => child instanceof ToolCallGroupComponent,
+			);
+			expect(groups).toHaveLength(1);
+			expect(plain(groups[0]!)).toContain("out-two");
+		} finally {
+			setChatTranscriptDisplayPreferences({ groupConsecutiveTools: previous });
+		}
 	});
 
 	it("renders the same card in the transcript builder", () => {

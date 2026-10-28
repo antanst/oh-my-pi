@@ -71,6 +71,9 @@
 
 - Removed the static context usage report (`ContextUsageView`, `renderContextUsage`, `describeContextUsage`), `contextUsageHead()`, and the `glyph` and `color` fields of `ContextBreakdown` categories; use `ContextViewer` ([#16160](https://github.com/can1357/oh-my-pi/pull/16160) by [@C-W-Z](https://github.com/C-W-Z)).
 - Fixed Markdown tables inside list items disappearing from the terminal transcript ([#17165](https://github.com/can1357/oh-my-pi/issues/17165)).
+### Added
+
+- Grouped tool-call cards now render each call's result through that tool's renderer while tool-output expansion (Ctrl+O) is on — collapsed cards show the latest call's result, Ctrl+X rows show every result; staging stays renderer-owned.
 
 ## [18.13.1] - 2026-10-27
 

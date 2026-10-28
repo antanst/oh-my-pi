@@ -40,6 +40,8 @@ interface GroupEntry {
 	summary: string;
 	status: EntryStatus;
 	errorText?: string;
+	args?: unknown;
+	result?: ResultShape;
 }
 
 interface ResultShape {
@@ -72,6 +74,25 @@ function renderCustomCall(tool: AgentTool | undefined, args: unknown): string | 
 		if (!rendered || typeof (rendered as Component).render !== "function") return undefined;
 		const line = (rendered as Component).render(SUMMARY_WIDTH).find(row => row.trim().length > 0);
 		return line ? truncateToWidth(replaceTabs(line.trim()), SUMMARY_WIDTH) : undefined;
+	} catch {
+		return undefined;
+	}
+}
+
+/** Render a result through the tool's own renderer; output staging stays renderer-owned. */
+function renderResultComponent(
+	tool: AgentTool | undefined,
+	result: ResultShape | undefined,
+	args: unknown,
+): Component | undefined {
+	if (!result || typeof tool?.renderResult !== "function") return undefined;
+	try {
+		// Extension renderers take a trailing `args` the base AgentTool type omits.
+		const renderer = tool.renderResult as
+			| ((result: unknown, options: unknown, theme: unknown, args?: unknown) => unknown)
+			| undefined;
+		const rendered = renderer?.call(tool, result, { expanded: true, isPartial: false }, theme, args);
+		return rendered && typeof (rendered as Component).render === "function" ? (rendered as Component) : undefined;
 	} catch {
 		return undefined;
 	}
@@ -129,7 +150,7 @@ function firstTextLine(result: ResultShape): string | undefined {
 
 export class ToolCallGroupComponent extends Container implements ToolExecutionHandle {
 	#entries = new Map<string, GroupEntry>();
-	#text = new Text("", 0, 0);
+	#outputExpanded = false;
 	#expanded = false;
 	#toolActivityVisible = true;
 	#finalized = false;
@@ -140,7 +161,6 @@ export class ToolCallGroupComponent extends Container implements ToolExecutionHa
 	constructor(options: ToolCallGroupOptions = {}) {
 		super();
 		this.#options = options;
-		this.addChild(this.#text);
 		this.#updateDisplay();
 	}
 
@@ -187,6 +207,7 @@ export class ToolCallGroupComponent extends Container implements ToolExecutionHa
 			status: "pending",
 		};
 		entry.toolName = toolName;
+		entry.args = args;
 		entry.summary = summarizeToolCall(toolName, args, this.#options.resolveTool?.(toolName));
 		entry.status = "pending";
 		entry.errorText = undefined;
@@ -202,6 +223,7 @@ export class ToolCallGroupComponent extends Container implements ToolExecutionHa
 			return;
 		}
 		entry.summary = summarizeToolCall(entry.toolName, args, this.#options.resolveTool?.(entry.toolName));
+		entry.args = args;
 		this.#updateDisplay();
 	}
 
@@ -233,6 +255,7 @@ export class ToolCallGroupComponent extends Container implements ToolExecutionHa
 		if (!entry) return;
 		entry.status = result.isError ? "error" : "success";
 		entry.errorText = result.isError ? firstTextLine(result) : undefined;
+		entry.result = result;
 		this.#blockVersion++;
 		this.#updateDisplay();
 	}
@@ -242,10 +265,16 @@ export class ToolCallGroupComponent extends Container implements ToolExecutionHa
 	setExecutionStarted(_toolCallId?: string): void {}
 
 	/**
-	 * The host's Ctrl+O controls tool-output expansion, not group rows. Group
-	 * rows use `setGroupExpanded` (app.tools.toggleGroupExpansion).
+	 * The host's Ctrl+O tool-output flag: on, entries render their result through
+	 * the tool's renderer after their summary line. Group rows use
+	 * `setGroupExpanded` (app.tools.toggleGroupExpansion).
 	 */
-	setExpanded(_expanded: boolean): void {}
+	setExpanded(expanded: boolean): void {
+		if (this.#outputExpanded === expanded) return;
+		this.#outputExpanded = expanded;
+		this.#blockVersion++;
+		this.#updateDisplay();
+	}
 
 	setGroupExpanded(expanded: boolean): void {
 		if (this.#expanded !== expanded) this.#blockVersion++;
@@ -261,14 +290,35 @@ export class ToolCallGroupComponent extends Container implements ToolExecutionHa
 
 	#updateDisplay(): void {
 		const entries = [...this.#entries.values()];
-		if (entries.length === 0) {
-			this.#text.setText("");
-			return;
+		const children: Component[] = [];
+		if (entries.length > 0) {
+			if (this.#expanded) {
+				for (const entry of entries) {
+					children.push(new Text(this.#entryLine(entry), 0, 0));
+					if (this.#outputExpanded) {
+						const result = renderResultComponent(
+							this.#options.resolveTool?.(entry.toolName),
+							entry.result,
+							entry.args,
+						);
+						if (result) children.push(result);
+					}
+				}
+			} else {
+				children.push(new Text(this.#collapsedLine(entries), 0, 0));
+				if (this.#outputExpanded) {
+					const latest = entries[entries.length - 1]!;
+					const result = renderResultComponent(
+						this.#options.resolveTool?.(latest.toolName),
+						latest.result,
+						latest.args,
+					);
+					if (result) children.push(result);
+				}
+			}
 		}
-		const lines = this.#expanded
-			? entries.map(entry => this.#entryLine(entry, true))
-			: [this.#collapsedLine(entries)];
-		this.#text.setText(lines.join("\n"));
+		this.clear();
+		for (const child of children) this.addChild(child);
 	}
 
 	#collapsedLine(entries: readonly GroupEntry[]): string {
@@ -279,8 +329,7 @@ export class ToolCallGroupComponent extends Container implements ToolExecutionHa
 		return ` ${theme.fg("dim", latest.summary)}${count}${failed}`;
 	}
 
-	#entryLine(entry: GroupEntry, expanded: boolean): string {
-		if (!expanded) return ` ${theme.fg("dim", entry.summary)}`;
+	#entryLine(entry: GroupEntry): string {
 		const summary = ` ${theme.fg(entry.status === "error" ? "error" : "dim", entry.summary)}`;
 		if (entry.status !== "error") return summary;
 		const detail = entry.errorText ? ` ${theme.fg("error", `— ${entry.errorText}`)}` : "";

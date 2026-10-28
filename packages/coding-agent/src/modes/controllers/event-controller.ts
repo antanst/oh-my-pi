@@ -535,6 +535,7 @@ export class EventController {
 				resolveTool: name => this.ctx.viewSession.getToolByName(name),
 			});
 			group.setGroupExpanded(this.ctx.toolGroupExpanded);
+			group.setExpanded(this.ctx.toolOutputExpanded);
 			this.ctx.chatContainer.addChild(group);
 			this.#lastToolGroup = group;
 		}

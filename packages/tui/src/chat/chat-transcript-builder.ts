@@ -268,6 +268,7 @@ export class ChatTranscriptBuilder {
 			this.#toolGroup = new ToolCallGroupComponent({
 				resolveTool: this.#deps.getTool,
 			});
+			this.#trackExpandable(this.#toolGroup);
 			this.container.addChild(this.#toolGroup);
 		}
 		return this.#toolGroup;
