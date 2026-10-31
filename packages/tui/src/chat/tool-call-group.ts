@@ -8,6 +8,7 @@
 import type { AgentTool } from "@oh-my-pi/pi-agent-core";
 import { sanitizeText } from "@oh-my-pi/pi-utils";
 import { Text } from "../components/text";
+import { isFramedBlockComponent } from "../render/output-block";
 import { theme } from "../theme";
 import { Container, type Component } from "../tui";
 import { replaceTabs, truncateToWidth } from "../utils";
@@ -72,6 +73,8 @@ function renderCustomCall(tool: AgentTool | undefined, args: unknown): string | 
 	try {
 		const rendered = tool.renderCall(args as never, { expanded: false, isPartial: false } as never, theme as never);
 		if (!rendered || typeof (rendered as Component).render !== "function") return undefined;
+		// A framed card's first row is its border, not a summary.
+		if (isFramedBlockComponent(rendered as Component)) return undefined;
 		const line = (rendered as Component).render(SUMMARY_WIDTH).find(row => row.trim().length > 0);
 		return line ? truncateToWidth(replaceTabs(line.trim()), SUMMARY_WIDTH) : undefined;
 	} catch {
@@ -134,6 +137,10 @@ function builtInSummary(toolName: string, args: unknown): string {
 			return `${toolName === "write" ? "Write" : "Edit"} ${path ?? ""}`.trim();
 		case "eval":
 			return `Eval ${firstString(args, ["title"]) ?? ""}`.trim();
+		case "task": {
+			const agent = firstString(args, ["agent"]);
+			return agent ? `Task: ${agent}` : "Task";
+		}
 		default: {
 			const primary = firstString(args, ["path", "command", "pattern", "query", "url", "name", "title"]);
 			return primary ? `${toolName} ${primary}` : toolName;

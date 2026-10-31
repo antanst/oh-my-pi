@@ -2,6 +2,15 @@
 
 ## [Unreleased]
 
+### Added
+
+- `display.groupConsecutiveTools` shows a run of consecutive built-in tool calls as one card: the latest call plus an extra-call count, and Ctrl+X expands it to one row per call
+- Grouped cards render each call's result through its tool renderer while tool-output expansion (Ctrl+O) is on
+
+### Fixed
+
+- Grouped tool calls show a `task` call as a one-line `Task` summary instead of the card's full border
+
 ## [18.14.1] - 2026-10-31
 
 ### Added
@@ -247,10 +256,6 @@
 - Reduced redraws during background subagent progress while keeping elapsed previews and native checklists current ([#17131](https://github.com/can1357/oh-my-pi/pull/17131) by [@iliaal](https://github.com/iliaal), based on [#16647](https://github.com/can1357/oh-my-pi/pull/16647) by [@Komzpa](https://github.com/Komzpa)).
 - Restoring a session with many subagents refreshes the running-subagent badge and lists once per burst instead of once per agent ([#16642](https://github.com/can1357/oh-my-pi/pull/16642) by [@Komzpa](https://github.com/Komzpa))
 - `ask` answers now name the option a note is on (`m: [X, Y] (note on Y: …)`, `User added note on Y: …`) ([#17126](https://github.com/can1357/oh-my-pi/pull/17126) by [@H4vC](https://github.com/H4vC))
-- `display.groupConsecutiveTools` shows a run of consecutive built-in tool calls as one card: the latest call plus an extra-call count, and Ctrl+O expands it to one row per call
-- `display.groupConsecutiveTools` shows a run of consecutive built-in tool calls as one card: the latest call plus an extra-call count, and Ctrl+X expands it to one row per call
-- Anthropic web search and Files API uploads follow `PI_ANTHROPIC_API_VERSION=2026-10-21`; web search omits `temperature` under that version ([#16706](https://github.com/can1357/oh-my-pi/pull/16706) by [@H4vC](https://github.com/H4vC))
-- llama.cpp auto-discovery now also finds local servers on llama-server's new default port 9931 when nothing answers on 8080 ([#16675](https://github.com/can1357/oh-my-pi/pull/16675) by [@bartbroere](https://github.com/bartbroere))
 
 ### Fixed
 

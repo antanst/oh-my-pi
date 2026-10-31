@@ -38,7 +38,12 @@ import {
 	ReadToolGroupComponent,
 	readArgsCollapseIntoGroup,
 } from "@oh-my-pi/pi-tui/chat/read-tool-group";
-import { isReplyWrite, ReplyWriteComponent, replyDisplayMessage, toolResultReplies } from "@oh-my-pi/pi-tui/chat/reply-write";
+import {
+	isReplyWrite,
+	ReplyWriteComponent,
+	replyDisplayMessage,
+	toolResultReplies,
+} from "@oh-my-pi/pi-tui/chat/reply-write";
 import {
 	messageBreaksToolGroup,
 	shouldGroupToolCall,

@@ -14,6 +14,7 @@ import {
 } from "@oh-my-pi/pi-tui/chat/display-preferences";
 import { shouldGroupToolCall, summarizeToolCall, ToolCallGroupComponent } from "@oh-my-pi/pi-tui/chat/tool-call-group";
 import { ToolExecutionComponent } from "@oh-my-pi/pi-tui/chat/tool-execution";
+import { renderCall as renderTaskCall } from "@oh-my-pi/pi-tui/tools/task";
 import { initTheme } from "@oh-my-pi/pi-tui/theme";
 import { createInteractiveModeContext } from "./helpers/interactive-mode-context";
 
@@ -128,6 +129,17 @@ describe("ToolCallGroupComponent", () => {
 		expect(plain(group)).not.toContain("$ echo one");
 		expect(plain(group)).toContain("+1");
 		group.seal();
+	});
+
+	it("summarizes a framed built-in renderer without its border", () => {
+		const tool = {
+			renderCall: (args: never, options: never, t: never) => renderTaskCall(args, options, t),
+		};
+		const group = new ToolCallGroupComponent({ resolveTool: () => tool as never });
+		group.beginCall("task", { agent: "scout", task: "map routes" }, "c1");
+		const line = plain(group);
+		expect(line).toContain("Task: scout");
+		expect(line).not.toContain("╭");
 	});
 
 	it("expands to one row per call in order", () => {
