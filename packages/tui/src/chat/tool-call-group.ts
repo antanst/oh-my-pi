@@ -1,7 +1,7 @@
 /**
  * Groups an uninterrupted run of built-in tool calls into one transcript card.
  *
- * The card shows the latest call summary plus the number of extra calls. Ctrl+O
+ * The card shows the latest call summary plus the number of extra calls. Ctrl+X
  * expands it to one row per call. Grouping is display-only: every call and
  * result stays in the session and in the model context.
  */
