@@ -1388,7 +1388,11 @@ export class ToolExecutionComponent extends Container {
 			// results, one-line receipts) keep that content instead of an equally
 			// tall but contentless frame.
 			const trimmed = trimBlankEdges(lines);
-			if (trimmed.length > this.#allocation) return this.#renderCompact(width);
+			// A one-row running block keeps the compact activity row: it carries the
+			// elapsed time that the full card's header row does not.
+			if (trimmed.length > this.#allocation || (this.#allocation === 1 && this.#isRunning())) {
+				return this.#renderCompact(width);
+			}
 			lines = trimmed;
 		}
 		this.#firstResultViewportRepaintShapePainted = this.#needsFirstResultViewportRepaintAtRender();

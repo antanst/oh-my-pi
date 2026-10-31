@@ -6,6 +6,10 @@
 
 - Grouped tool-call cards now render each call's result through that tool's renderer while tool-output expansion (Ctrl+O) is on — collapsed cards show the latest call's result, Ctrl+X rows show every result; staging stays renderer-owned.
 
+### Fixed
+
+- A running tool squeezed to one row keeps its compact activity row, so the elapsed time stays visible
+
 ## [18.14.1] - 2026-10-31
 
 ### Added
