@@ -4,12 +4,17 @@
 
 ### Added
 
-- `display.groupConsecutiveTools` shows a run of consecutive built-in tool calls as one card: the latest call plus an extra-call count, and Ctrl+X expands it to one row per call
+- `display.groupConsecutiveTools` shows a run of consecutive built-in tool calls as one card: the latest call plus an extra-call count, and Alt+X expands it to one row per call
 - Grouped cards render each call's result through its tool renderer while tool-output expansion (Ctrl+O) is on
 
 ### Fixed
 
 - Grouped tool calls show a `task` call as a one-line `Task` summary instead of the card's full border
+- Grouped tools display built-in results, complete approval previews, and retain partial updates and background failures
+- Grouped transcripts preserve prose, read, and retry order across live updates and replay; shared viewers support independent row and output controls
+- Alt+X controls group rows without blocking autoresearch's Ctrl+X shortcut; hidden activity and narrow summaries remain consistent
+- Local updates preserve existing edits, use official upstream releases, build the local target, and clean generated files after interruption
+- OpenSpec archive commands stop before spec synchronization when the archive destination already exists
 
 ## [18.14.1] - 2026-10-31
 

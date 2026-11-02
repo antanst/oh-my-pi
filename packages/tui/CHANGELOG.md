@@ -4,11 +4,16 @@
 
 ### Added
 
-- Grouped tool-call cards now render each call's result through that tool's renderer while tool-output expansion (Ctrl+O) is on — collapsed cards show the latest call's result, Ctrl+X rows show every result; staging stays renderer-owned.
+- Grouped tool-call cards now render each call's result through that tool's renderer while tool-output expansion (Ctrl+O) is on — collapsed cards show the latest call's result, Alt+X rows show every result; staging stays renderer-owned.
 
 ### Fixed
 
 - A running tool squeezed to one row keeps its compact activity row, so the elapsed time stays visible
+- Grouped built-in results show output without duplicate command previews, retain late results, and honor hidden activity on native surfaces
+- Group summaries fit one terminal row; Alt+X expands rows independently of Ctrl+O in shared transcript viewers
+- Consecutive tool runs remain grouped across append batches while prose stays separately selectable
+- Cancelling one grouped background call leaves other running calls active
+- Grouped native output retains empty-result counts, timeout notes, errors, and result controls
 
 ## [18.14.1] - 2026-10-31
 
