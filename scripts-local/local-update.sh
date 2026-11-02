@@ -9,7 +9,7 @@
 # to ~/.local/bin/omp. The stock binary is backed up once, the first
 # time this script runs, and never overwritten afterwards.
 #
-# Usage: sh scripts/local-update.sh [--non-interactive] [--force]
+# Usage: sh scripts-local/local-update.sh [--non-interactive] [--force]
 #        (run from anywhere inside the repo)
 
 set -u
@@ -21,7 +21,7 @@ for arg in "$@"; do
 	--non-interactive) NON_INTERACTIVE=1 ;;
 	--force) FORCE=1 ;;
 	*)
-		echo "Usage: sh scripts/local-update.sh [--non-interactive] [--force]" >&2
+		echo "Usage: sh scripts-local/local-update.sh [--non-interactive] [--force]" >&2
 		exit 1
 		;;
 	esac

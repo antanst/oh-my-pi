@@ -6,7 +6,7 @@ import * as path from "node:path";
 import * as vcs from "@oh-my-pi/pi-natives/vcs";
 import { removeWithRetries } from "@oh-my-pi/pi-utils";
 
-const updater = path.resolve(import.meta.dir, "../../../scripts/local-update.sh");
+const updater = path.resolve(import.meta.dir, "../../../scripts-local/local-update.sh");
 const bundle = "packages/stats/src/embedded-client.generated.txt";
 const roots: string[] = [];
 

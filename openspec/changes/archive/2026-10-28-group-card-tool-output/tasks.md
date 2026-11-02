@@ -23,4 +23,4 @@
 
 ## 5. Build and install
 
-- [ ] 5.1 Build and install the new omp via `scripts/local-update.sh` (rebases onto the newest upstream release tag, `bun install`, `bun run build:native`, binary build, installs to `~/.local/bin/omp`); verify `~/.local/bin/omp --version` prints the new version and the version-boundary smoke (`omp --smoke-test`) passes.
+- [ ] 5.1 Build and install the new omp via `scripts-local/local-update.sh` (rebases onto the newest upstream release tag, `bun install`, `bun run build:native`, binary build, installs to `~/.local/bin/omp`); verify `~/.local/bin/omp --version` prints the new version and the version-boundary smoke (`omp --smoke-test`) passes.

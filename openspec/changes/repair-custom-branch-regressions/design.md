@@ -47,7 +47,7 @@ Both archive command and skill calculate and inspect the destination before modi
 
 ## Implementation ownership
 
-- Updater: `scripts/local-update.sh` and isolated updater regression tests; findings 1, 14, 15, 16.
+- Updater: `scripts-local/local-update.sh` and isolated updater regression tests; findings 1, 14, 15, 16.
 - Group renderer: `tool-call-group.ts`, shared `tool-execution.ts` result mode, and a new TUI regression file; findings 3, 4, 11, 13.
 - Live controller: `event-controller.ts` and a dedicated live regression file; findings 2, 5, 6 live, 7, 8. Pass real UI/cwd/image options at group construction.
 - Replay/viewers: `ui-helpers.ts`, `chat-transcript-builder.ts`, outline and shared viewers, and dedicated regression tests; findings 6 replay, 10, 12. Pass real group context and own builder group-state APIs.
@@ -72,7 +72,7 @@ Run the focused existing suite plus new behavior regressions, type checks throug
 
 - The final focused run passes 373 tests across 28 files, with zero failures.
 - `bun --cwd=packages/tui check` and `bun --cwd=packages/coding-agent check` pass lint, formatting, and type checks. Unchanged files still produce warnings.
-- `dash -n scripts/local-update.sh` and `shellcheck --shell=sh scripts/local-update.sh` pass. Disposable Git repositories exercise dirty-tree rejection, official release selection, stale-build protection, and signal cleanup.
+- `dash -n scripts-local/local-update.sh` and `shellcheck --shell=sh scripts-local/local-update.sh` pass. Disposable Git repositories exercise dirty-tree rejection, official release selection, stale-build protection, and signal cleanup.
 - The real terminal at 80 and 40 columns shows grouped results without repeated command input. Alt+X, Ctrl+O, late failure, and hide/restore preserve the expected content.
 - Six native result descriptions preserve empty counts, timeout notes, and short errors on data-first and fallback hosts. Data-first descriptions also retain result tones.
 - Four disposable archive scenarios verify initial collisions, already-dated names, successful synchronization and movement, and the late-collision guard.

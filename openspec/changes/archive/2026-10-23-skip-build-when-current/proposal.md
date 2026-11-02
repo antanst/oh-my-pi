@@ -20,4 +20,4 @@ The script rebuilds and reinstalls on every run even when nothing changed since 
 
 ## Impact
 
-- `scripts/local-update.sh` only.
+- `scripts-local/local-update.sh` only.

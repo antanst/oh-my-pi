@@ -30,4 +30,4 @@ With `display.groupConsecutiveTools: true`, group cards render call summaries on
 - `packages/coding-agent/src/modes/controllers/event-controller.ts` and `packages/coding-agent/src/modes/utils/ui-helpers.ts`, `packages/tui/src/chat/chat-transcript-builder.ts` — propagate `toolOutputExpanded` to group cards on creation, toggle, and transcript rebuild (live and replay paths).
 - Tests: `packages/coding-agent/src/test/tool-call-group.test.ts` gains output-rendering and gating cases; existing collapse/expansion tests must keep passing.
 - No wire, session, or model-context changes — grouping stays display-only; results are already in history.
-- Verification and rollout: build and test the tree, then install the locally built omp via `scripts/local-update.sh`.
+- Verification and rollout: build and test the tree, then install the locally built omp via `scripts-local/local-update.sh`.

@@ -2,7 +2,7 @@
 
 ## Context
 
-Single flag on an existing decision point: the skip check at `scripts/local-update.sh`.
+Single flag on an existing decision point: the skip check at `scripts-local/local-update.sh`.
 
 ## Decisions
 

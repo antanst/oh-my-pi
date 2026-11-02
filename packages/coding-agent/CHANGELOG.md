@@ -6,6 +6,11 @@
 
 - `display.groupConsecutiveTools` shows a run of consecutive built-in tool calls as one card: the latest call plus an extra-call count, and Alt+X expands it to one row per call
 - Grouped cards render each call's result through its tool renderer while tool-output expansion (Ctrl+O) is on
+- `scripts-local/run-omp-tests.sh` runs local TypeScript/Rust tests, repository script tests, and CLI smoke tests
+
+### Changed
+
+- The custom updater now runs from `scripts-local/local-update.sh`
 
 ### Fixed
 

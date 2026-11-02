@@ -2,7 +2,7 @@
 
 ## Why
 
-`scripts/local-update.sh` rebases the `custom` branch onto `main` on every run. Updates should come from release tags instead, and the user wants a choice before moving to a newer release.
+`scripts-local/local-update.sh` rebases the `custom` branch onto `main` on every run. Updates should come from release tags instead, and the user wants a choice before moving to a newer release.
 
 ## What Changes
 
@@ -23,4 +23,4 @@
 
 ## Impact
 
-- `scripts/local-update.sh` only. No product code, no dependencies.
+- `scripts-local/local-update.sh` only. No product code, no dependencies.

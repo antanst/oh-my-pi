@@ -2,7 +2,7 @@
 
 ## Context
 
-Single POSIX sh script, `scripts/local-update.sh`. Runs on this workstation against `origin` (fork) and `upstream` (can1357/oh-my-pi). Release tags are plain `vX.Y.Z` (see `git tag -l 'v[0-9]*'`); no pre-release suffixes observed.
+Single POSIX sh script, `scripts-local/local-update.sh`. Runs on this workstation against `origin` (fork) and `upstream` (can1357/oh-my-pi). Release tags are plain `vX.Y.Z` (see `git tag -l 'v[0-9]*'`); no pre-release suffixes observed.
 
 ## Goals / Non-Goals
 

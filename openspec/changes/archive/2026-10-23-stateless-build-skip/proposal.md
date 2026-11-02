@@ -20,4 +20,4 @@ Three problems surfaced in real use: the `.scratch` marker keeps state outside g
 
 ## Impact
 
-- `scripts/local-update.sh` and one `.gitignore` line. Granularity limit: local source commits that do not bump the package version are not rebuilt — accepted by the user.
+- `scripts-local/local-update.sh` and one `.gitignore` line. Granularity limit: local source commits that do not bump the package version are not rebuilt — accepted by the user.

@@ -19,4 +19,4 @@ The version-based skip makes it impossible to rebuild when the installed binary 
 
 ## Impact
 
-- `scripts/local-update.sh` only.
+- `scripts-local/local-update.sh` only.
