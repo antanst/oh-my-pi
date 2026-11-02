@@ -101,7 +101,13 @@ In both branches, never create the root as a side effect: do not run `openspec i
 
    **If `totalTasks` is zero:** Proceed without a task-related warning.
 
-4. **Assess delta spec sync state**
+4. **Preflight the archive and assess delta spec sync state**
+
+   Calculate `<target-name>` once: use the change name as-is when it starts with
+   `YYYY-MM-DD-`; otherwise prepend the current date as `YYYY-MM-DD-<change-name>`.
+   Use `<planningHome.changesDir>/archive/<target-name>` as the destination.
+   If that destination exists, stop before syncing or changing any main spec.
+   Report the collision and suggest a different date or renaming the existing archive.
 
    Use `artifactPaths.specs.existingOutputPaths` from status JSON as the only
    delta-spec source. If the `specs` entry is missing or
@@ -166,9 +172,9 @@ In both branches, never create the root as a side effect: do not run `openspec i
    mkdir -p "<planningHome.changesDir>/archive"
    ```
 
-   Generate the target name: use the change name as-is when it already starts with a `YYYY-MM-DD-` prefix; otherwise prepend the current date as `YYYY-MM-DD-<change-name>`. Never stack a second date (same rule as `openspec archive`).
+   Reuse the destination calculated in step 4. Do not recalculate the date after sync.
 
-   **Check if target already exists:**
+   **Check again if the target exists, immediately before moving:**
    - If yes: Fail with error, suggest renaming existing archive or using different date
    - If no: Move `changeRoot` to the archive directory
 
