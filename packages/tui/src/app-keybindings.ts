@@ -142,7 +142,7 @@ export const KEYBINDINGS = {
 		description: "Expand tools",
 	},
 	"app.tools.toggleGroupExpansion": {
-		defaultKeys: "ctrl+x",
+		defaultKeys: "alt+x",
 		description: "Expand grouped tool calls",
 	},
 	"app.tools.toggleVisibility": {

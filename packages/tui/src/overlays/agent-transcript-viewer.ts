@@ -30,6 +30,8 @@ import type { SessionMessageEntryLike } from "../chat/transcript-entry";
 import type { ObservableSession, SessionObserverRegistry } from "./session-observer-registry";
 import { getEditorTheme, theme } from "../theme/theme";
 import { matchesSelectDown, matchesSelectUp } from "../keybinding-matchers";
+import { getKeybindings } from "../keybindings";
+import { chatTranscriptDisplayPreferences as displayPreferences } from "../chat/display-preferences";
 import type { AgentHubRemote } from "./agent-hub";
 import { ChatTranscriptBuilder } from "../chat/chat-transcript-builder";
 import {
@@ -178,6 +180,7 @@ export class AgentTranscriptViewer implements Component {
 	#editor: Editor | undefined;
 	#notice: string | undefined;
 	#expanded = false;
+	#groupExpanded = false;
 
 	#localState: LocalTranscriptState | undefined;
 	#localUnavailable = "";
@@ -571,6 +574,15 @@ export class AgentTranscriptViewer implements Component {
 				return;
 			}
 		}
+		if (
+			displayPreferences.groupConsecutiveTools &&
+			getKeybindings().matches(data, "app.tools.toggleGroupExpansion")
+		) {
+			this.#groupExpanded = !this.#groupExpanded;
+			this.#builder.setGroupExpanded(this.#groupExpanded);
+			this.#deps.requestRender();
+			return;
+		}
 
 		// Once the reader starts typing a message, the editor owns every key.
 		const editorEmpty = !this.#editor || this.#editor.getText().trim() === "";
@@ -764,6 +776,9 @@ export class AgentTranscriptViewer implements Component {
 			hintsRow([
 				this.#editor ? actionHint("tui.input.submit", "send") : undefined,
 				{ keys: [this.#deps.expandKeys[0] ?? "ctrl+o"], label: "expand" },
+				displayPreferences.groupConsecutiveTools
+					? actionHint("app.tools.toggleGroupExpansion", "group rows")
+					: undefined,
 			]),
 		);
 		const head = [span("Agent Hub", "accent"), span(` ${theme.sep.dot} `, "dim"), span(id, "accent")];
@@ -829,6 +844,9 @@ export class AgentTranscriptViewer implements Component {
 		if (statsLine) lines.push(statsLine);
 		const keys =
 			`${formatKeyHint("escape")}:close  ${formatKeyHint(this.#deps.expandKeys[0] ?? "ctrl+o")}:expand  ` +
+			(displayPreferences.groupConsecutiveTools
+				? `${editorKey("app.tools.toggleGroupExpansion")}:group rows  `
+				: "") +
 			`${this.#editor ? "empty input → " : ""}${formatKeyHints(["j", "k"])}:scroll  ${formatKeyHints(["g", "shift+g"])}:top/bottom`;
 		const hint = this.#editor ? `${editorKey("tui.input.submit")}:send  ${keys}` : keys;
 		lines.push(theme.fg("dim", hint));

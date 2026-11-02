@@ -33,6 +33,8 @@ import { editorKey, editorKeys } from "../chrome/keybinding-hints";
 import { highlightCode, type ThemeColor, theme } from "../theme/theme";
 import { commandFromToolCall, extractBlocks, extractLinks } from "./copy-targets";
 import { matchesAppToolsExpand, matchesSelectCancel, matchesSelectDown, matchesSelectUp } from "../keybinding-matchers";
+import { getKeybindings } from "../keybindings";
+import { chatTranscriptDisplayPreferences as displayPreferences } from "../chat/display-preferences";
 import { ChatTranscriptBuilder } from "../chat/chat-transcript-builder";
 import { TranscriptBrowser, type TranscriptBrowserFrame } from "../chat/transcript-browser";
 import {
@@ -340,6 +342,7 @@ export class CopySelectorComponent implements Component {
 	#selected = 0;
 	#visible: boolean[] | undefined;
 	#expanded = false;
+	#groupExpanded = false;
 	/** Inner blocks of the selected turn while descended, else undefined. */
 	#blocks: CopyBlock[] | undefined;
 	#blockSelected = 0;
@@ -393,6 +396,7 @@ export class CopySelectorComponent implements Component {
 			requestRender: this.deps.requestRender,
 		});
 		builder.setExpanded(this.#expanded);
+		builder.setGroupExpanded(this.#groupExpanded);
 		this.#targets = appendOutlineEntries(builder, entries);
 		return builder;
 	}
@@ -464,6 +468,15 @@ export class CopySelectorComponent implements Component {
 		if (matchesAppToolsExpand(data)) {
 			this.#expanded = !this.#expanded;
 			this.#builder.setExpanded(this.#expanded);
+			this.deps.requestRender();
+			return;
+		}
+		if (
+			displayPreferences.groupConsecutiveTools &&
+			getKeybindings().matches(data, "app.tools.toggleGroupExpansion")
+		) {
+			this.#groupExpanded = !this.#groupExpanded;
+			this.#builder.setGroupExpanded(this.#groupExpanded);
 			this.deps.requestRender();
 			return;
 		}
@@ -921,9 +934,12 @@ export class CopySelectorComponent implements Component {
 		const upDown = editorKeys("tui.select.up", "tui.select.down");
 		const enter = formatKeyHint("enter");
 		const cancel = editorKey("tui.select.cancel");
+		const groupHint = displayPreferences.groupConsecutiveTools
+			? `  ${editorKey("app.tools.toggleGroupExpansion")} group rows`
+			: "";
 		const hint = this.#blocks
 			? `${this.#blockSelected + 1}/${this.#blocks.length}  ${upDown} block  ${formatKeyHint("left")}/${cancel} back  ${enter} ${action}${openHint}  click ${theme.cmd.copy}/${theme.cmd.share}`
-			: `${this.#targets.length > 0 ? `${this.#selected + 1}/${this.#targets.length}  ` : ""}${upDown} step  ${blocks.length > 0 ? `${formatKeyHint("right")} blocks  ` : ""}${enter} ${action}  ${this.#truncated ? `${formatKeyHint("a")} earlier turns  ` : ""}${expandKeyHint()} expand  ${cancel} close`;
+			: `${this.#targets.length > 0 ? `${this.#selected + 1}/${this.#targets.length}  ` : ""}${upDown} step  ${blocks.length > 0 ? `${formatKeyHint("right")} blocks  ` : ""}${enter} ${action}  ${this.#truncated ? `${formatKeyHint("a")} earlier turns  ` : ""}${expandKeyHint()} expand${groupHint}  ${cancel} close`;
 		const anchorId = target
 			? this.#blocks
 				? `copy:${target.turnId}:block:${this.#blockSelected}`

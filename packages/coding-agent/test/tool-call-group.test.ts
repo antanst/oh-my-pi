@@ -12,7 +12,7 @@ import {
 	chatTranscriptDisplayPreferences,
 	setChatTranscriptDisplayPreferences,
 } from "@oh-my-pi/pi-tui/chat/display-preferences";
-import { shouldGroupToolCall, summarizeToolCall, ToolCallGroupComponent } from "@oh-my-pi/pi-tui/chat/tool-call-group";
+import { shouldGroupToolCall, ToolCallGroupComponent } from "@oh-my-pi/pi-tui/chat/tool-call-group";
 import { ToolExecutionComponent } from "@oh-my-pi/pi-tui/chat/tool-execution";
 import { renderCall as renderTaskCall } from "@oh-my-pi/pi-tui/tools/task";
 import { initTheme } from "@oh-my-pi/pi-tui/theme";
@@ -296,11 +296,6 @@ describe("ToolCallGroupComponent", () => {
 		group.updateResult({ content: [{ type: "text", text: "out-one" }] }, false, "c1");
 		expect(plain(group).split("\n")).toHaveLength(1);
 		expect(plain(group)).not.toContain("out-one");
-	});
-
-	it("uses the fallback summary when no custom renderer exists", () => {
-		expect(summarizeToolCall("bash", { command: "ls -l" }, undefined)).toBe("$ ls -l");
-		expect(summarizeToolCall("write", { path: "/tmp/a.ts" }, undefined)).toBe("Write /tmp/a.ts");
 	});
 });
 

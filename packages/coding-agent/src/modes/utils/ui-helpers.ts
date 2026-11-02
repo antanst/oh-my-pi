@@ -536,6 +536,9 @@ export class UiHelpers {
 			if (!toolGroup) {
 				toolGroup = new ToolCallGroupComponent({
 					resolveTool: name => this.ctx.viewSession.getToolByName(name),
+					ui: this.ctx.ui,
+					cwd: this.ctx.viewSession.sessionManager.getCwd(),
+					showImages: cfgTerminalShowImages.get(this.ctx.settings),
 				});
 				toolGroup.setGroupExpanded(this.ctx.toolGroupExpanded);
 				toolGroup.setExpanded(this.ctx.toolOutputExpanded);
@@ -662,20 +665,23 @@ export class UiHelpers {
 					}
 					assistantComponent.setServedModelMismatch(this.ctx.servedModelTracker.check(message));
 				}
-				const hasVisibleAssistantContent = assistantHasVisibleContent(message);
+				const hasVisibleAssistantContent = assistantHasVisibleContent(timeline.beforeTools);
 				if (hasVisibleAssistantContent) {
 					// Rebuild reconstructs immutable history; seal (not finalize) because
 					// a pending entry otherwise keeps the group active indefinitely.
 					readGroup?.seal();
 					readGroup = null;
 				}
-				if (messageBreaksToolGroup(message)) sealToolGroup();
+				if (messageBreaksToolGroup(timeline.beforeTools)) sealToolGroup();
 				const errorPresentation = resolveAssistantErrorPresentation(message, this.ctx.viewSession.retryAttempt);
 				const hasErrorStop = errorPresentation.kind === "full";
 				const errorMessage = hasErrorStop ? errorPresentation.text : null;
 				const appendAssistantSegment = (toolCallId: string) => {
 					const segment = timeline.afterToolCalls.get(toolCallId);
 					if (!segment || !assistantHasVisibleContent(segment)) return;
+					readGroup?.seal();
+					readGroup = null;
+					if (messageBreaksToolGroup(segment)) sealToolGroup();
 					const component = createAssistantMessageComponent(
 						this.ctx,
 						segment,
@@ -1019,7 +1025,7 @@ export class UiHelpers {
 					component.setArgsComplete(toolCallId);
 					continue;
 				}
-				component.seal();
+				component.seal(toolCallId);
 				this.ctx.pendingTools.delete(toolCallId);
 			}
 		}

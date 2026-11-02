@@ -93,6 +93,7 @@ export interface ChatTranscriptBuilderDeps {
 export class ChatTranscriptBuilder {
 	readonly container = new TranscriptContainer();
 	#pendingTools = new Map<string, ToolExecutionHandle>();
+	#assistantSegments = new WeakMap<Component, Extract<AgentMessage, { role: "assistant" }>>();
 	#readArgs = new Map<string, Record<string, unknown>>();
 	#readGroup: ReadToolGroupComponent | null = null;
 	#toolGroup: ToolCallGroupComponent | null = null;
@@ -110,6 +111,8 @@ export class ChatTranscriptBuilder {
 	#todoSnapshot: ToolExecutionComponent | null = null;
 	#expandables: Array<{ setExpanded(expanded: boolean): void }> = [];
 	#expanded = false;
+	#groupExpanded = false;
+	#entryComponentsInProgress: Component[] | undefined;
 	#entryComponents = new Map<string, Component[]>();
 
 	readonly #deps: ChatTranscriptBuilderDeps;
@@ -132,14 +135,12 @@ export class ChatTranscriptBuilder {
 		// (a read whose result has not arrived stays pending); otherwise the row
 		// would sit above its tools. The drain happens here at the end of the pass.
 		if (this.#readArgs.size === 0 && this.#pendingTools.size === 0) this.#flushPendingUsage();
-		this.#sealToolGroup();
 	}
 
 	/** Append newly persisted entries without rebuilding already rendered rows. */
 	append(entries: TranscriptEntry[]): void {
 		for (const entry of entries) this.#appendEntry(entry);
 		if (this.#readArgs.size === 0 && this.#pendingTools.size === 0) this.#flushPendingUsage();
-		this.#sealToolGroup();
 	}
 
 	/**
@@ -157,13 +158,32 @@ export class ChatTranscriptBuilder {
 		return this.#expanded;
 	}
 
+	/** Toggle group rows independently of result expansion, including future groups. */
+	setGroupExpanded(expanded: boolean): void {
+		this.#groupExpanded = expanded;
+		for (const component of this.#expandables) {
+			if (component instanceof ToolCallGroupComponent) component.setGroupExpanded(expanded);
+		}
+	}
+
+	/** Components owned or shared by an entry, including groups opened by earlier entries. */
+	componentsForEntry(entryId: string): readonly Component[] {
+		return this.#entryComponents.get(entryId) ?? [];
+	}
+
+	/** Displayed assistant slice, used to keep shared-group selection apart from later prose. */
+	assistantSegmentForComponent(component: Component): Extract<AgentMessage, { role: "assistant" }> | undefined {
+		return this.#assistantSegments.get(component);
+	}
+
 	/** Rendered row where a persisted entry begins, after the container has painted once. */
 	rowForEntry(entryId: string): number | undefined {
+		let firstRow: number | undefined;
 		for (const component of this.#entryComponents.get(entryId) ?? []) {
 			const row = this.container.getChildStartRow(component);
-			if (row !== undefined) return row;
+			if (row !== undefined && (firstRow === undefined || row < firstRow)) firstRow = row;
 		}
-		return undefined;
+		return firstRow;
 	}
 
 	/** Tear down components (sealing pending spinners) and clear build state. */
@@ -195,12 +215,21 @@ export class ChatTranscriptBuilder {
 		this.reset();
 	}
 
+	/** Record shared groups as well as newly mounted components for selection and scrolling. */
 	#appendEntry(entry: TranscriptEntry): void {
 		const message = transcriptEntryMessage(entry);
 		if (!message) return;
 		const before = this.container.children.length;
-		this.#appendChatMessage(message);
-		const components = this.container.children.slice(before);
+		const components: Component[] = [];
+		this.#entryComponentsInProgress = components;
+		try {
+			this.#appendChatMessage(message);
+		} finally {
+			this.#entryComponentsInProgress = undefined;
+		}
+		for (const component of this.container.children.slice(before)) {
+			if (!components.includes(component)) components.push(component);
+		}
 		if (components.length > 0) this.#entryComponents.set(entry.id, components);
 	}
 
@@ -255,6 +284,9 @@ export class ChatTranscriptBuilder {
 			this.#trackExpandable(this.#readGroup);
 			this.container.addChild(this.#readGroup);
 		}
+		if (!this.#entryComponentsInProgress?.includes(this.#readGroup)) {
+			this.#entryComponentsInProgress?.push(this.#readGroup);
+		}
 		return this.#readGroup;
 	}
 
@@ -267,9 +299,16 @@ export class ChatTranscriptBuilder {
 		if (!this.#toolGroup) {
 			this.#toolGroup = new ToolCallGroupComponent({
 				resolveTool: this.#deps.getTool,
+				ui: this.#deps.ui,
+				cwd: this.#deps.cwd,
+				showImages: displayPreferences.showImages,
 			});
+			this.#toolGroup.setGroupExpanded(this.#groupExpanded);
 			this.#trackExpandable(this.#toolGroup);
 			this.container.addChild(this.#toolGroup);
+		}
+		if (!this.#entryComponentsInProgress?.includes(this.#toolGroup)) {
+			this.#entryComponentsInProgress?.push(this.#toolGroup);
 		}
 		return this.#toolGroup;
 	}
@@ -450,6 +489,7 @@ export class ChatTranscriptBuilder {
 			expandThinkingBlocks,
 		);
 		assistantComponent.pickReactionTarget(this.container.children);
+		this.#assistantSegments.set(assistantComponent, timeline.beforeTools);
 		this.#mountProse(assistantComponent);
 		let lastAssistantComponent = assistantComponent;
 
@@ -462,19 +502,22 @@ export class ChatTranscriptBuilder {
 		}
 		assistantComponent.setServedModelMismatch(this.#servedModelTracker.check(message));
 
-		const hasVisibleAssistantContent = assistantHasVisibleContent(message);
+		const hasVisibleAssistantContent = assistantHasVisibleContent(timeline.beforeTools);
 		if (hasVisibleAssistantContent) {
 			// New visible turn content closes the current read run (mirrors rebuild).
 			this.#readGroup?.seal();
 			this.#readGroup = null;
 		}
-		if (messageBreaksToolGroup(message)) this.#sealToolGroup();
+		if (messageBreaksToolGroup(timeline.beforeTools)) this.#sealToolGroup();
 
 		const errorPresentation = resolveAssistantErrorPresentation(message);
 		const hasErrorStop = errorPresentation.kind === "full";
 		const errorMessage = hasErrorStop ? errorPresentation.text : null;
 		const appendAssistantSegment = (segment: Extract<AgentMessage, { role: "assistant" }> | undefined) => {
 			if (!segment || !assistantHasVisibleContent(segment)) return;
+			this.#readGroup?.seal();
+			this.#readGroup = null;
+			if (messageBreaksToolGroup(segment)) this.#sealToolGroup();
 			const component = new AssistantMessageComponent(
 				segment,
 				hideThinkingBlock,
@@ -486,6 +529,7 @@ export class ChatTranscriptBuilder {
 				expandThinkingBlocks,
 			);
 			this.#mountProse(component);
+			this.#assistantSegments.set(component, segment);
 			lastAssistantComponent = component;
 		};
 
@@ -593,6 +637,7 @@ export class ChatTranscriptBuilder {
 
 	#appendToolResult(message: Extract<AgentMessage, { role: "toolResult" }>): void {
 		const pending = this.#pendingTools.get(message.toolCallId);
+		if (pending) this.#entryComponentsInProgress?.push(pending);
 		const isReadGroupResult = message.toolName === "read" && (!pending || pending instanceof ReadToolGroupComponent);
 		if (isReadGroupResult) {
 			let component = pending;

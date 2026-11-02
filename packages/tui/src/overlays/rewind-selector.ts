@@ -45,6 +45,8 @@ import type { MessageRenderer } from "../chat/extension-types";
 import { recentTranscriptEntries, type TranscriptEntryLike as TranscriptEntry } from "../chat/transcript-entry";
 import { theme } from "../theme/theme";
 import { matchesAppToolsExpand, matchesSelectCancel, matchesSelectDown, matchesSelectUp } from "../keybinding-matchers";
+import { getKeybindings } from "../keybindings";
+import { chatTranscriptDisplayPreferences as displayPreferences } from "../chat/display-preferences";
 import { ChatTranscriptBuilder } from "../chat/chat-transcript-builder";
 import {
 	nearestVisibleOutlineTarget,
@@ -180,6 +182,7 @@ export class RewindSelectorComponent implements Component {
 	/** Same, for the active sibling column. */
 	#siblingVisible: boolean[] | undefined;
 	#expanded = false;
+	#groupExpanded = false;
 
 	// Branch strip: present when the selected turn has sibling branches.
 	// Column 0 is the current path; siblings follow in tree order.
@@ -263,6 +266,7 @@ export class RewindSelectorComponent implements Component {
 			requestRender: this.deps.requestRender,
 		});
 		builder.setExpanded(this.#expanded);
+		builder.setGroupExpanded(this.#groupExpanded);
 		return builder;
 	}
 
@@ -385,6 +389,13 @@ export class RewindSelectorComponent implements Component {
 			});
 			return;
 		}
+		if (
+			displayPreferences.groupConsecutiveTools &&
+			getKeybindings().matches(data, "app.tools.toggleGroupExpansion")
+		) {
+			this.#toggleGroupExpanded();
+			return;
+		}
 		if (this.#filter !== undefined) {
 			this.#handleFilterInput(data);
 			return;
@@ -479,6 +490,16 @@ export class RewindSelectorComponent implements Component {
 		this.#builder.setExpanded(this.#expanded);
 		for (const columns of this.#variantCache.values()) {
 			for (const column of columns) column.builder.setExpanded(this.#expanded);
+		}
+		this.deps.requestRender();
+	}
+
+	/** Keep row expansion synchronized across the current path and cached sibling branches. */
+	#toggleGroupExpanded(): void {
+		this.#groupExpanded = !this.#groupExpanded;
+		this.#builder.setGroupExpanded(this.#groupExpanded);
+		for (const columns of this.#variantCache.values()) {
+			for (const column of columns) column.builder.setGroupExpanded(this.#groupExpanded);
 		}
 		this.deps.requestRender();
 	}
@@ -944,7 +965,10 @@ export class RewindSelectorComponent implements Component {
 		const upDown = editorKeys("tui.select.up", "tui.select.down");
 		const leftRight = formatKeyHints(["left", "right"]);
 		const lateral = columns.length > 0 ? `${leftRight} branches` : `${leftRight} user turns`;
-		const keys = `${upDown} step  ${lateral}  ${formatKeyHint("f")} filter  ${formatKeyHint("enter")} rewind  ${this.#truncated ? `${formatKeyHint("a")} earlier turns  ` : ""}${expandKeyHint()} expand  ${editorKey("tui.select.cancel")} cancel`;
+		const groupHint = displayPreferences.groupConsecutiveTools
+			? `  ${editorKey("app.tools.toggleGroupExpansion")} group rows`
+			: "";
+		const keys = `${upDown} step  ${lateral}  ${formatKeyHint("f")} filter  ${formatKeyHint("enter")} rewind  ${this.#truncated ? `${formatKeyHint("a")} earlier turns  ` : ""}${expandKeyHint()} expand${groupHint}  ${editorKey("tui.select.cancel")} cancel`;
 		return {
 			header: [this.#header()],
 			body: {

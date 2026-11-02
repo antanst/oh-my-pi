@@ -86,6 +86,7 @@ import { cfgCycleOrder } from "../../config/model-settings";
 import {
 	cfgBareExitOnEmptySession,
 	cfgBareSlashCommands,
+	cfgDisplayGroupConsecutiveTools,
 	cfgDisplayHideToolActivity,
 	cfgDoubleEscapeAction,
 	cfgEmojiAutocomplete,
@@ -518,10 +519,11 @@ export class InputController {
 		}
 		if (!this.#groupExpandListenerInstalled) {
 			this.#groupExpandListenerInstalled = true;
-			// `app.tools.toggleGroupExpansion` (Ctrl+X) controls group rows only.
+			// `app.tools.toggleGroupExpansion` (Alt+X) controls group rows only.
 			// Ctrl+O keeps its own meaning: tool-output expansion.
 			this.ctx.ui.addInputListener(data => {
 				if (!this.ctx.keybindings.matches(data, "app.tools.toggleGroupExpansion")) return undefined;
+				if (!cfgDisplayGroupConsecutiveTools.get(this.ctx.settings)) return undefined;
 				if (this.ctx.ui.hasOverlay()) return undefined;
 				this.toggleToolGroupExpansion();
 				return { consume: true };

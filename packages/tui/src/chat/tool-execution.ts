@@ -220,6 +220,8 @@ export interface ToolExecutionOptions {
 	showImages?: boolean; // default: true (only used if terminal supports images)
 	/** Allow the name-keyed renderer registry only when the active tool is the built-in implementation. */
 	useBuiltInRenderer?: boolean;
+	/** Render only the result; a grouped call already supplies its own summary. */
+	resultOnly?: boolean;
 }
 
 /** A tool result or progress frame as a card shows it. */
@@ -238,8 +240,8 @@ export interface ToolExecutionHandle extends Component {
 	setExpanded(expanded: boolean): void;
 	/** Mark the call parked: it returned, but stays tracked for async job frames. */
 	parkAsBackground(): void;
-	/** Seal the block as final history and stop its animations. */
-	seal(): void;
+	/** Seal one grouped call, or the whole block when no id is supplied. */
+	seal(toolCallId?: string): void;
 }
 
 /** Tools whose returned call hands its card to the background job it started (see {@link parksAsBackground}). */
@@ -280,7 +282,7 @@ export function settleWithJobFrame(component: ToolExecutionHandle, frame: ToolRe
 	const state = asyncJobState(frame.details);
 	if (state === "cancelled") {
 		component.updateResult(frame, true, toolCallId);
-		component.seal();
+		component.seal(toolCallId);
 		return;
 	}
 	component.updateResult({ ...frame, isError: state === "failed" }, false, toolCallId);
@@ -380,6 +382,7 @@ export class ToolExecutionComponent extends Container {
 	#presentationFrame: AnimationFrame = { tick: 0, now: 0 };
 	#toolActivityVisible = true;
 	#showImages: boolean;
+	readonly #resultOnly: boolean;
 	#isPartial = true;
 	// A background task whose call already returned; later async job frames are
 	// partial updates, but the block is ready to retire as history.
@@ -507,17 +510,23 @@ export class ToolExecutionComponent extends Container {
 		this.#toolLabel = tool?.label ?? toolName;
 		this.#renderer = options.useBuiltInRenderer === false ? undefined : toolRenderers[toolName];
 		this.#showImages = options.showImages ?? true;
+		this.#resultOnly = options.resultOnly ?? false;
+		if (this.#resultOnly) this.#expanded = true;
 		this.#tool = tool;
 		this.#ui = ui;
 		this.#args = args;
 		this.#editMode = resolveEditModeForTool(toolName, tool);
-		if (this.#editMode) this.#previewReady = Promise.withResolvers<void>();
+		if (this.#editMode && !this.#resultOnly) this.#previewReady = Promise.withResolvers<void>();
 
 		// Always create both - contentBox for custom tools/bash/tools with renderers, contentText for other built-ins.
 		// paddingY is 0 so blocks render tight; the transcript's blank separator between
 		// entries is the only vertical rhythm. Background tints cover just the content rows.
 		this.#contentBox = new Box(0, 0);
-		this.#contentText = new WidthAwareText(contentWidth => this.#renderDefaultCard(contentWidth), 1, 0);
+		this.#contentText = new WidthAwareText(
+			contentWidth => this.#renderDefaultCard(contentWidth),
+			this.#resultOnly ? 0 : 1,
+			0,
+		);
 
 		// Use Box for custom tools or built-in tools with rich renderers.
 		const hasCustomRenderer = !!(tool?.renderCall || tool?.renderResult);
@@ -732,13 +741,14 @@ export class ToolExecutionComponent extends Container {
 		// them. Todo snapshots and detached background tool progress are deliberate
 		// static exceptions because their rows can be superseded or committed to
 		// scrollback while later updates continue elsewhere.
-		const isStreamingArgs = !this.#argsComplete && streamsBody(this.#toolName);
+		const isStreamingArgs = !this.#resultOnly && !this.#argsComplete && streamsBody(this.#toolName);
 		const isBackgroundAsyncRunning =
 			(this.#result?.details as { async?: { state?: string } } | undefined)?.async?.state === "running";
 		const renderer = this.#renderer;
 		const pendingAnimation = renderer?.animatedPendingPreview;
 		const partialAnimation = renderer?.animatedPartialResult;
 		const pendingCallConsumesSpinner =
+			!this.#resultOnly &&
 			this.#result === undefined &&
 			(renderer === undefined
 				? // Only the generic #formatToolExecution fallback consumes the frame;
@@ -905,7 +915,7 @@ export class ToolExecutionComponent extends Container {
 	 * Mark the tool terminal even though no result arrived (the turn aborted or
 	 * abandoned it) and stop animating so the container can retire it.
 	 */
-	seal(): void {
+	seal(_toolCallId?: string): void {
 		if (this.#sealed) return;
 		this.#sealed = true;
 		this.#blockVersion++;
@@ -1021,6 +1031,12 @@ export class ToolExecutionComponent extends Container {
 	 */
 	override describe(cx?: DescribeContext): NativeNode {
 		if (this.#toolName === "wait" && this.#isBenignSkip()) return EMPTY_NODE;
+		if (this.#resultOnly && this.#tool?.renderResult && !(this.#tool as ToolDescriber).describeResult) {
+			return withHidden(
+				col([...this.#contentBox.children, ...this.#nativeResultImages(undefined)]),
+				!this.#toolActivityVisible,
+			);
+		}
 		const dataFirst = cx?.supports("tool") === true;
 		const host: NativeHostKinds = { media: cx?.supports("media") === true, json: cx?.supports("json") === true };
 		const key = [
@@ -1039,9 +1055,9 @@ export class ToolExecutionComponent extends Container {
 			host.json,
 			getThemeEpoch(),
 		];
-		return this.#native.get(key, () =>
-			withHidden(dataFirst ? this.#describeTool(host) : this.#describeCard(host), !this.#toolActivityVisible),
-		);
+		return this.#native.get(key, () => {
+			return withHidden(dataFirst ? this.#describeTool(host) : this.#describeCard(host), !this.#toolActivityVisible);
+		});
 	}
 
 	/** Milliseconds since execution started (running) or its total (settled); undefined before it starts. */
@@ -1242,7 +1258,10 @@ export class ToolExecutionComponent extends Container {
 						args,
 					)
 				: undefined;
-			const callView = !result || !merged || !resultView ? renderer.describeCall?.(args, options) : undefined;
+			const callView =
+				!this.#resultOnly && (!result || !merged || !resultView)
+					? renderer.describeCall?.(args, options)
+					: undefined;
 			if (merged || !callView || !resultView) {
 				return resultView ?? callView ?? { head: [span(this.#toolLabel, "toolTitle")] };
 			}
@@ -1264,6 +1283,7 @@ export class ToolExecutionComponent extends Container {
 
 	#defaultNativeView(options: RenderResultContextOptions): NativeToolView {
 		const result = this.#result;
+		if (this.#resultOnly) return { body: [text(this.#nativeTextOutput())] };
 		return describeDefaultToolExecution({
 			label: this.#toolLabel,
 			args: this.#args,
@@ -1380,7 +1400,23 @@ export class ToolExecutionComponent extends Container {
 		if (!this.#toolActivityVisible || this.#allocation === 0 || (this.#toolName === "wait" && this.#isBenignSkip())) {
 			return [];
 		}
-		let lines = super.render(width);
+		let lines: readonly string[];
+		if (this.#resultOnly && this.#usesContentBox) {
+			// Preserve renderer-owned rows verbatim, without the standalone card's padding.
+			const resultRows: string[] = [];
+			for (const child of this.children) {
+				if (child === this.#contentBox) {
+					for (const part of this.#contentBox.children) {
+						for (const row of part.render(width)) resultRows.push(row);
+					}
+				} else {
+					for (const row of child.render(width)) resultRows.push(row);
+				}
+			}
+			lines = resultRows;
+		} else {
+			lines = super.render(width);
+		}
 		if (this.#allocation < 3) {
 			// A squeezed allocation degrades only blocks that genuinely overflow it.
 			// The allocator measures blocks by trimmed height and never squeezes one
@@ -1465,6 +1501,7 @@ export class ToolExecutionComponent extends Container {
 	}
 
 	#rebuildDisplay(): void {
+		if (this.#resultOnly && !this.#result) return;
 		// Sync shared mutable render state for component closures
 		this.#renderState.expanded = this.#expanded;
 		this.#renderState.isPartial = this.#isPartial;
@@ -1512,7 +1549,7 @@ export class ToolExecutionComponent extends Container {
 			// missing `renderCall`; when the call is intentionally suppressed
 			// (mergeCallAndResult once a result exists) we render nothing here so
 			// the result component isn't preceded by a redundant tool-name line.
-			const shouldRenderCall = !this.#result || !mergeCallAndResult;
+			const shouldRenderCall = !this.#resultOnly && (!this.#result || !mergeCallAndResult);
 			if (shouldRenderCall) {
 				if (tool.renderCall) {
 					try {
@@ -1678,7 +1715,7 @@ export class ToolExecutionComponent extends Container {
 				const renderContext = this.#buildRenderContext();
 				this.#renderState.renderContext = renderContext;
 
-				const shouldRenderCall = !this.#result || !renderer.mergeCallAndResult;
+				const shouldRenderCall = !this.#resultOnly && (!this.#result || !renderer.mergeCallAndResult);
 				if (shouldRenderCall) {
 					// Render call component
 					try {
@@ -1855,6 +1892,7 @@ export class ToolExecutionComponent extends Container {
 	 */
 	#buildRenderContext(): Record<string, unknown> {
 		const context: Record<string, unknown> = {};
+		if (this.#resultOnly) context.resultOnly = true;
 		const normalizeTimeoutSeconds = (value: unknown, maxSeconds: number): number | undefined => {
 			if (typeof value !== "number" || !Number.isFinite(value)) return undefined;
 			return Math.max(1, Math.min(maxSeconds, value));
@@ -1970,6 +2008,7 @@ export class ToolExecutionComponent extends Container {
 	 * #contentText fallback and the benign-skip path so both render identically.
 	 */
 	#renderDefaultCard(contentWidth: number): string {
+		if (this.#resultOnly) return theme.fg("toolOutput", replaceTabs(this.#getTextOutput()));
 		return formatDefaultToolExecution(
 			{
 				label: this.#toolLabel,

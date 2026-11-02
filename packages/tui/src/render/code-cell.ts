@@ -26,6 +26,8 @@ import type { State } from "./types";
 /** Content and display limits for a code preview with optional output. */
 export interface CodeCellOptions {
 	code: string;
+	/** Omit input already presented by a containing tool group. */
+	resultOnly?: boolean;
 	language?: string;
 	index?: number;
 	total?: number;
@@ -143,7 +145,7 @@ export function renderCodeCell(options: CodeCellOptions, theme: Theme): string[]
 	const { title, meta } = formatHeader(options, theme);
 	const state = getState(options.status);
 
-	const normalizedCode = replaceTabs(code ?? "");
+	const normalizedCode = options.resultOnly ? "" : replaceTabs(code ?? "");
 	const rawCodeLines = splitTerminalOutputLines(normalizedCode);
 	const maxCodeLines = expanded ? rawCodeLines.length : Math.min(rawCodeLines.length, codeMaxLines);
 	const hiddenCodeLines = rawCodeLines.length - maxCodeLines;
@@ -200,7 +202,9 @@ export function renderCodeCell(options: CodeCellOptions, theme: Theme): string[]
 
 	const outputLines = renderCellOutput(output, expanded, outputMaxLines, theme);
 
-	const sections: Array<{ label?: string; lines: readonly string[] }> = [{ lines: displayCodeLines }];
+	const sections: Array<{ label?: string; lines: readonly string[] }> = options.resultOnly
+		? []
+		: [{ lines: displayCodeLines }];
 	if (outputLines.length > 0) {
 		sections.push({ label: theme.fg("toolTitle", "Output"), lines: outputLines });
 	}
@@ -255,19 +259,21 @@ export function describeCodeCell(options: Omit<CodeCellOptions, "width">, theme:
 	const { expanded = false, outputMaxLines = 6, codeMaxLines = 12 } = options;
 	const { head, meta } = describeHeader(options, theme);
 	const start = options.codeStartLine ?? options.codeLineNumbers?.find((line): line is number => line != null);
-	const sections: NativeOutputBlockSection[] = [
-		{
-			key: "code",
-			body: [
-				code(options.code ?? "", {
-					lang: options.language,
-					start,
-					numbers: start !== undefined || undefined,
-					wrap: true,
-				}),
-			],
-		},
-	];
+	const sections: NativeOutputBlockSection[] = options.resultOnly
+		? []
+		: [
+				{
+					key: "code",
+					body: [
+						code(options.code ?? "", {
+							lang: options.language,
+							start,
+							numbers: start !== undefined || undefined,
+							wrap: true,
+						}),
+					],
+				},
+			];
 	const output = describeCellOutput(options.output, expanded, outputMaxLines);
 	if (output) sections.push(output);
 	return describeOutputBlock({

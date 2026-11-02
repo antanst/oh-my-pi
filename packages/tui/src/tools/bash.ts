@@ -231,6 +231,8 @@ export interface BashRenderContext {
 	previewLines?: number;
 	/** Timeout in seconds */
 	timeout?: number;
+	/** The containing group already presents the command. */
+	resultOnly?: boolean;
 }
 
 /** Caller-supplied shell labels and argument projections. */
@@ -486,7 +488,7 @@ export function createShellRenderer<TArgs>(config: ShellRendererConfig<TArgs>) {
 			const details = result.details;
 			const isTimeout = details?.timedOut === true;
 			const header =
-				config.showHeader === false
+				config.showHeader === false || options.renderContext?.resultOnly
 					? undefined
 					: renderStatusLine(
 							success
@@ -613,15 +615,18 @@ export function createShellRenderer<TArgs>(config: ShellRendererConfig<TArgs>) {
 						phase: isPartial ? "partial" : isError ? (isTimeout ? "warning" : "error") : "success",
 						footerMeta,
 						sections: [
-							{
-								// Viewport-sized tail window in every state — streaming and final
-								// render identically; only ctrl+o uncaps.
-								content: capPreviewLines(
-									args ? (cmdLines ??= formatBashCommandLines(renderArgs, uiTheme)) : [],
-									uiTheme,
-									{ expanded },
-								),
-							},
+							...(renderContext?.resultOnly
+								? []
+								: [
+										{
+											// Viewport-sized tail window in every state; only output expansion uncaps.
+											content: capPreviewLines(
+												args ? (cmdLines ??= formatBashCommandLines(renderArgs, uiTheme)) : [],
+												uiTheme,
+												{ expanded },
+											),
+										},
+									]),
 							{ label: uiTheme.fg("toolTitle", "Output"), content: outputLines },
 						],
 					};
@@ -690,7 +695,7 @@ export function createShellRenderer<TArgs>(config: ShellRendererConfig<TArgs>) {
 			const meta = details?.meta;
 			const box = runBox(
 				[
-					runInput(command, SHELL_INPUT),
+					!renderContext?.resultOnly && runInput(command, SHELL_INPUT),
 					output.trim().length > 0 && runOutput(output, { role: "omp.tool.bash.output", previewLines }),
 					runFoot({
 						state,

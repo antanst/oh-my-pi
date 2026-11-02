@@ -1,19 +1,27 @@
 /**
  * Groups an uninterrupted run of built-in tool calls into one transcript card.
  *
- * The card shows the latest call summary plus the number of extra calls. Ctrl+X
- * expands it to one row per call. Grouping is display-only: every call and
+ * The card shows the latest call summary plus the number of extra calls. The
+ * group expansion action reveals one row per call. Grouping is display-only: every call and
  * result stays in the session and in the model context.
  */
 import type { AgentTool } from "@oh-my-pi/pi-agent-core";
 import { sanitizeText } from "@oh-my-pi/pi-utils";
-import { Text } from "../components/text";
+import { withHidden } from "../native/describe";
+import type { DescribeContext, NativeNode } from "../native/node";
+import { WidthAwareText } from "../render/width-aware-text";
 import { isFramedBlockComponent } from "../render/output-block";
 import { theme } from "../theme";
-import { Container, type Component } from "../tui";
-import { replaceTabs, truncateToWidth } from "../utils";
+import { type Component, Container } from "../tui";
+import { replaceTabs, sliceByColumn, truncateToWidth, visibleWidth } from "../utils";
 import { toolRenderers } from "../tools";
-import type { ToolExecutionHandle } from "./tool-execution";
+import {
+	ToolExecutionComponent,
+	type ToolExecutionHandle,
+	type ToolExecutionUi,
+	type ToolResultFrame,
+	toolRenderName,
+} from "./tool-execution";
 
 /** Built-in tool names with a TUI renderer; extensions may re-register these. */
 const BUILTIN_RENDERED_TOOLS = new Set(Object.keys(toolRenderers));
@@ -40,23 +48,38 @@ interface GroupEntry {
 	toolName: string;
 	summary: string;
 	status: EntryStatus;
+	sealed?: boolean;
 	errorText?: string;
 	args?: unknown;
-	result?: ResultShape;
-}
-
-interface ResultShape {
-	content?: Array<{ type: string; text?: string }>;
-	isError?: boolean;
+	result?: ToolResultFrame;
+	renderer?: ToolExecutionComponent;
+	rendererVersion?: number;
 }
 
 export interface ToolCallGroupOptions {
 	/** Resolve the live tool definition for its custom call renderer. */
 	resolveTool?: (name: string) => AgentTool | undefined;
+	/** Host context shared with ordinary tool cards. */
+	ui?: ToolExecutionUi;
+	cwd?: string;
+	showImages?: boolean;
 }
 
 const SUMMARY_WIDTH = 400;
 const MAX_ERROR_WIDTH = 160;
+
+const DEFAULT_UI: ToolExecutionUi = {
+	requestRender() {},
+	requestComponentRender() {},
+	resetDisplay() {},
+};
+
+/** Fit a summary into one row, reserving the count and failure suffix. */
+function summaryLine(summary: string, suffix: string, width: number): string {
+	const suffixWidth = visibleWidth(suffix);
+	if (suffixWidth >= width) return sliceByColumn(suffix, suffixWidth - width, width);
+	return truncateToWidth(summary, width - suffixWidth) + suffix;
+}
 
 /**
  * Build a one-line call summary. A custom extension `renderCall` wins, so its
@@ -77,25 +100,6 @@ function renderCustomCall(tool: AgentTool | undefined, args: unknown): string | 
 		if (isFramedBlockComponent(rendered as Component)) return undefined;
 		const line = (rendered as Component).render(SUMMARY_WIDTH).find(row => row.trim().length > 0);
 		return line ? truncateToWidth(replaceTabs(line.trim()), SUMMARY_WIDTH) : undefined;
-	} catch {
-		return undefined;
-	}
-}
-
-/** Render a result through the tool's own renderer; output staging stays renderer-owned. */
-function renderResultComponent(
-	tool: AgentTool | undefined,
-	result: ResultShape | undefined,
-	args: unknown,
-): Component | undefined {
-	if (!result || typeof tool?.renderResult !== "function") return undefined;
-	try {
-		// Extension renderers take a trailing `args` the base AgentTool type omits.
-		const renderer = tool.renderResult as
-			| ((result: unknown, options: unknown, theme: unknown, args?: unknown) => unknown)
-			| undefined;
-		const rendered = renderer?.call(tool, result, { expanded: true, isPartial: false }, theme, args);
-		return rendered && typeof (rendered as Component).render === "function" ? (rendered as Component) : undefined;
 	} catch {
 		return undefined;
 	}
@@ -148,7 +152,8 @@ function builtInSummary(toolName: string, args: unknown): string {
 	}
 }
 
-function firstTextLine(result: ResultShape): string | undefined {
+/** Extract a short failure detail for the expanded summary. */
+function firstTextLine(result: ToolResultFrame): string | undefined {
 	const text = result.content?.find(part => part.type === "text" && typeof part.text === "string")?.text;
 	const line = text?.split("\n").find(row => row.trim().length > 0);
 	if (!line) return undefined;
@@ -176,6 +181,26 @@ export class ToolCallGroupComponent extends Container implements ToolExecutionHa
 		return super.render(width);
 	}
 
+	/** Hide the native layout without unmounting its retained children. */
+	override describe(cx: DescribeContext): NativeNode | null {
+		const described = super.describe(cx);
+		return described ? withHidden(described, !this.#toolActivityVisible) : null;
+	}
+
+	/** Keep result images and figures mutable until their render work finishes. */
+	isTranscriptBlockPending(): boolean {
+		return (
+			this.#toolActivityVisible &&
+			this.children.some(child => child instanceof ToolExecutionComponent && child.isTranscriptBlockPending())
+		);
+	}
+
+	/** Release every cached result, including those outside the visible rows. */
+	override dispose(): void {
+		for (const entry of this.#entries.values()) entry.renderer?.dispose();
+		this.clear();
+	}
+
 	isTranscriptBlockFinalized(): boolean {
 		if (this.#sealed) return true;
 		if (!this.#finalized) return false;
@@ -184,7 +209,7 @@ export class ToolCallGroupComponent extends Container implements ToolExecutionHa
 
 	#hasPendingEntries(): boolean {
 		for (const entry of this.#entries.values()) {
-			if (entry.status === "pending") return true;
+			if (entry.status === "pending" && !entry.sealed) return true;
 		}
 		return false;
 	}
@@ -193,14 +218,31 @@ export class ToolCallGroupComponent extends Container implements ToolExecutionHa
 		this.#finalized = true;
 	}
 
-	seal(): void {
+	/** Seal a cancelled call independently, or close the complete run. */
+	seal(toolCallId?: string): void {
+		if (toolCallId !== undefined) {
+			const entry = this.#entries.get(toolCallId);
+			if (!entry || entry.sealed) return;
+			entry.sealed = true;
+			entry.renderer?.seal();
+			this.#blockVersion++;
+			return;
+		}
 		if (!this.#sealed) this.#blockVersion++;
 		this.#sealed = true;
+		for (const entry of this.#entries.values()) entry.renderer?.seal();
 	}
 
 	parkAsBackground(): void {}
 
+	/** Include async image and figure changes owned by mounted result components. */
 	getTranscriptBlockVersion(): number {
+		for (const entry of this.#entries.values()) {
+			const version = entry.renderer?.getTranscriptBlockVersion();
+			if (entry.rendererVersion === version) continue;
+			entry.rendererVersion = version;
+			this.#blockVersion++;
+		}
 		return this.#blockVersion;
 	}
 
@@ -213,6 +255,10 @@ export class ToolCallGroupComponent extends Container implements ToolExecutionHa
 			summary: toolName,
 			status: "pending",
 		};
+		entry.renderer?.dispose();
+		entry.renderer = undefined;
+		entry.result = undefined;
+		entry.sealed = false;
 		entry.toolName = toolName;
 		entry.args = args;
 		entry.summary = summarizeToolCall(toolName, args, this.#options.resolveTool?.(toolName));
@@ -231,6 +277,7 @@ export class ToolCallGroupComponent extends Container implements ToolExecutionHa
 		}
 		entry.summary = summarizeToolCall(entry.toolName, args, this.#options.resolveTool?.(entry.toolName));
 		entry.args = args;
+		entry.renderer?.updateArgs(args);
 		this.#updateDisplay();
 	}
 
@@ -239,6 +286,8 @@ export class ToolCallGroupComponent extends Container implements ToolExecutionHa
 		if (oldId === newId || !newId) return;
 		const entry = this.#entries.get(oldId);
 		if (!entry || this.#entries.has(newId)) return;
+		entry.renderer?.dispose();
+		entry.renderer = undefined;
 		entry.toolCallId = newId;
 		const reordered = [...this.#entries].map(([key, value]): [string, GroupEntry] => [
 			key === oldId ? newId : key,
@@ -251,19 +300,22 @@ export class ToolCallGroupComponent extends Container implements ToolExecutionHa
 
 	/** Remove one call without discarding its successful siblings. */
 	removeEntry(toolCallId: string): boolean {
+		this.#entries.get(toolCallId)?.renderer?.dispose();
 		if (!this.#entries.delete(toolCallId)) return this.#entries.size === 0;
 		this.#updateDisplay();
 		return this.#entries.size === 0;
 	}
 
-	updateResult(result: ResultShape, _isPartial = false, toolCallId?: string): void {
+	/** Preserve partial progress until a terminal frame settles the call. */
+	updateResult(result: ToolResultFrame, isPartial = false, toolCallId?: string): void {
 		if (!toolCallId) return;
 		const entry = this.#entries.get(toolCallId);
 		if (!entry) return;
-		entry.status = result.isError ? "error" : "success";
-		entry.errorText = result.isError ? firstTextLine(result) : undefined;
+		entry.status = isPartial ? "pending" : result.isError ? "error" : "success";
+		entry.errorText = !isPartial && result.isError ? firstTextLine(result) : undefined;
 		entry.result = result;
-		this.#blockVersion++;
+		entry.renderer?.updateResult(result, isPartial);
+		if (this.#sealed || entry.sealed) entry.renderer?.stopAnimation();
 		this.#updateDisplay();
 	}
 
@@ -292,54 +344,71 @@ export class ToolCallGroupComponent extends Container implements ToolExecutionHa
 	setToolActivityVisible(visible: boolean): void {
 		if (this.#toolActivityVisible === visible) return;
 		this.#toolActivityVisible = visible;
+		this.#blockVersion++;
 		super.invalidate();
 	}
 
-	#updateDisplay(): void {
-		const entries = [...this.#entries.values()];
-		const children: Component[] = [];
-		if (entries.length > 0) {
-			if (this.#expanded) {
-				for (const entry of entries) {
-					children.push(new Text(this.#entryLine(entry), 0, 0));
-					if (this.#outputExpanded) {
-						const result = renderResultComponent(
-							this.#options.resolveTool?.(entry.toolName),
-							entry.result,
-							entry.args,
-						);
-						if (result) children.push(result);
-					}
-				}
-			} else {
-				children.push(new Text(this.#collapsedLine(entries), 0, 0));
-				if (this.#outputExpanded) {
-					const latest = entries[entries.length - 1]!;
-					const result = renderResultComponent(
-						this.#options.resolveTool?.(latest.toolName),
-						latest.result,
-						latest.args,
-					);
-					if (result) children.push(result);
-				}
-			}
+	/** Lazily mount the established result path without its separate call preview. */
+	#resultComponent(entry: GroupEntry): ToolExecutionComponent | undefined {
+		if (!entry.result) return undefined;
+		if (!entry.renderer) {
+			const tool = this.#options.resolveTool?.(entry.toolName);
+			entry.renderer = new ToolExecutionComponent(
+				toolRenderName(entry.toolName, tool),
+				entry.args,
+				{ resultOnly: true, showImages: this.#options.showImages },
+				tool,
+				this.#options.ui ?? DEFAULT_UI,
+				this.#options.cwd,
+				entry.toolCallId,
+			);
+			entry.renderer.updateResult(entry.result, entry.status === "pending");
+			if (this.#sealed || entry.sealed) entry.renderer.seal();
 		}
-		this.clear();
-		for (const child of children) this.addChild(child);
+		return entry.renderer;
 	}
 
-	#collapsedLine(entries: readonly GroupEntry[]): string {
+	/** Reconcile visible rows while reusing live result components. */
+	#updateDisplay(): void {
+		this.#blockVersion++;
+		const entries = [...this.#entries.values()];
+		const latest = entries[entries.length - 1];
+		this.clear();
+		for (const entry of entries) {
+			const visible = this.#expanded || entry === latest;
+			if (!visible || !this.#outputExpanded) {
+				entry.renderer?.dispose();
+				entry.renderer = undefined;
+			}
+			if (!visible) continue;
+			this.addChild(
+				new WidthAwareText(
+					width => (this.#expanded ? this.#entryLine(entry, width) : this.#collapsedLine(entries, width)),
+					0,
+					0,
+				),
+			);
+			if (this.#outputExpanded) {
+				const result = this.#resultComponent(entry);
+				if (result) this.addChild(result);
+			}
+		}
+	}
+
+	/** Preserve the hidden-call count and failure marker at narrow widths. */
+	#collapsedLine(entries: readonly GroupEntry[], width: number): string {
 		const latest = entries[entries.length - 1]!;
 		const extra = entries.length - 1;
 		const count = extra > 0 ? ` ${theme.fg("dim", `+${extra}`)}` : "";
 		const failed = entries.some(entry => entry.status === "error") ? theme.fg("error", " ✗") : "";
-		return ` ${theme.fg("dim", latest.summary)}${count}${failed}`;
+		return summaryLine(` ${theme.fg("dim", latest.summary)}`, count + failed, width);
 	}
 
-	#entryLine(entry: GroupEntry): string {
+	/** Limit only the call summary, never its renderer's result rows. */
+	#entryLine(entry: GroupEntry, width: number): string {
 		const summary = ` ${theme.fg(entry.status === "error" ? "error" : "dim", entry.summary)}`;
-		if (entry.status !== "error") return summary;
+		if (entry.status !== "error") return summaryLine(summary, "", width);
 		const detail = entry.errorText ? ` ${theme.fg("error", `— ${entry.errorText}`)}` : "";
-		return `${summary}${theme.fg("error", " ✗")}${detail}`;
+		return summaryLine(summary + detail, theme.fg("error", " ✗"), width);
 	}
 }

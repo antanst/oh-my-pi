@@ -15,11 +15,7 @@ import {
 	readArgsCollapseIntoGroup,
 	readArgsHaveTarget,
 } from "@oh-my-pi/pi-tui/chat/read-tool-group";
-import {
-	messageBreaksToolGroup,
-	shouldGroupToolCall,
-	ToolCallGroupComponent,
-} from "@oh-my-pi/pi-tui/chat/tool-call-group";
+import { shouldGroupToolCall, ToolCallGroupComponent } from "@oh-my-pi/pi-tui/chat/tool-call-group";
 import { RecapNotice } from "@oh-my-pi/pi-tui/chat/recap-notice";
 import {
 	isReplyWrite,
@@ -209,13 +205,8 @@ export class EventController {
 	readonly #turnUsage = new TurnUsageTally();
 	/** When the last completed run ended; stale `#turnStartedAt` anchors are cleared against it. */
 	#lastAgentEndAt: number | undefined = undefined;
-	// Count of visible assistant content blocks (rendered non-empty text/thinking)
-	// already seen in the current streaming message. A newly appearing one breaks
-	// the read run: the rendered reasoning/answer is a visual separator, so reads
-	// after it start a fresh group. Empty/absent thinking — common when a model
-	// emits one read per completion — does not break it, so a run of consecutive
-	// reads collapses into one group even across completion boundaries.
-	#lastVisibleBlockCount = 0;
+	/** Visible content positions already applied as run boundaries in this cumulative message. */
+	#streamedGroupBoundaryIndices = new Set<number>();
 	#renderedCustomMessages = new Set<string>();
 	#lastIntent: string | undefined = undefined;
 	/** Returned calls parked for their background job's frames ({@link parksAsBackground}). */
@@ -520,6 +511,36 @@ export class EventController {
 		this.#lastToolGroup = undefined;
 	}
 
+	/** Apply each newly visible separator at its content position, not on every cumulative update. */
+	#applyStreamedGroupBoundary(content: AssistantMessage["content"][number], contentIndex: number): void {
+		if (this.#streamedGroupBoundaryIndices.has(contentIndex)) return;
+		const visible =
+			content.type === "image" ||
+			(content.type === "text" && canonicalizeMessage(content.text)) ||
+			(content.type === "thinking" && canonicalizeMessage(content.thinking));
+		if (!visible) return;
+		this.#streamedGroupBoundaryIndices.add(contentIndex);
+		this.#resetReadGroup();
+		// Collapsed reasoning does not break the non-read tool run.
+		if (content.type !== "thinking") this.#resetToolGroup();
+	}
+
+	/** Replace only the retried call; shared cards retain their unrelated siblings. */
+	#removePriorTurnToolEntry(toolCallId: string): void {
+		const stale = this.#priorTurnToolComponents.get(toolCallId);
+		if (!stale) return;
+		this.#priorTurnToolComponents.delete(toolCallId);
+		if (stale instanceof ToolCallGroupComponent) {
+			if (stale.removeEntry(toolCallId)) {
+				if (stale === this.#lastToolGroup) this.#resetToolGroup();
+				this.ctx.chatContainer.removeChild(stale);
+			}
+		} else if (stale instanceof ToolExecutionComponent) {
+			this.ctx.chatContainer.removeChild(stale);
+		}
+		if (this.#toolTimelineComponents.get(toolCallId) === stale) this.#toolTimelineComponents.delete(toolCallId);
+	}
+
 	#canGroupToolCall(renderToolName: string, args: unknown): boolean {
 		return (
 			displayPreferences.groupConsecutiveTools &&
@@ -533,6 +554,9 @@ export class EventController {
 		if (!this.#lastToolGroup) {
 			const group = new ToolCallGroupComponent({
 				resolveTool: name => this.ctx.viewSession.getToolByName(name),
+				ui: this.ctx.ui,
+				cwd: this.ctx.sessionManager.getCwd(),
+				showImages: cfgTerminalShowImages.get(this.ctx.settings),
 			});
 			group.setGroupExpanded(this.ctx.toolGroupExpanded);
 			group.setExpanded(this.ctx.toolOutputExpanded);
@@ -548,19 +572,19 @@ export class EventController {
 			const component = this.ctx.pendingTools.get(toolCallId);
 			if (component) background.add(component);
 		}
-		for (const component of this.#toolTimelineComponents.values()) {
+		for (const [toolCallId, component] of this.#toolTimelineComponents) {
 			if (
 				(component instanceof ToolExecutionComponent ||
 					component instanceof ReadToolGroupComponent ||
 					component instanceof ToolCallGroupComponent) &&
 				!background.has(component)
 			) {
-				component.seal();
+				component.seal(toolCallId);
 			}
 		}
 		for (const [toolCallId, component] of this.ctx.pendingTools) {
 			if (this.#backgroundCallIds.has(toolCallId)) continue;
-			component.seal();
+			component.seal(toolCallId);
 			this.ctx.pendingTools.delete(toolCallId);
 		}
 		this.#backgroundCallIds = new Set(
@@ -702,7 +726,7 @@ export class EventController {
 	}
 
 	#retractToolCardEntry(toolCallId: string, component: ToolExecutionHandle): void {
-		component.seal();
+		component.seal(toolCallId);
 		let removeComponent = true;
 		if (component instanceof ReadToolGroupComponent) {
 			removeComponent = component.removeEntry(toolCallId);
@@ -1061,7 +1085,7 @@ export class EventController {
 		this.#pendingMessageUpdate = undefined;
 		this.#resetReadGroup();
 		this.#resetToolGroup();
-		this.#lastVisibleBlockCount = 0;
+		this.#streamedGroupBoundaryIndices.clear();
 		this.#renderedCustomMessages.clear();
 		this.#lastIntent = undefined;
 		this.#toolTimelineComponents.clear();
@@ -1397,7 +1421,7 @@ export class EventController {
 				abandoned.markTranscriptBlockFinalized();
 			}
 			this.#finalizeAbandonedPostToolSegments();
-			this.#lastVisibleBlockCount = 0;
+			this.#streamedGroupBoundaryIndices.clear();
 			this.#streamedToolCallIdByIndex.clear();
 			this.ctx.streamingComponent = createAssistantMessageComponent(this.ctx);
 			this.ctx.streamingMessage = event.message;
@@ -1629,18 +1653,6 @@ export class EventController {
 			const timeline = splitAssistantMessageToolTimeline(this.ctx.streamingMessage);
 			this.#streamingReveal.setTarget(timeline.beforeTools, timeline.hasToolCalls);
 
-			const visibleBlockCount = this.ctx.streamingMessage.content.filter(
-				content =>
-					(content.type === "text" && canonicalizeMessage(content.text)) ||
-					(content.type === "thinking" && canonicalizeMessage(content.thinking)),
-			).length;
-			if (visibleBlockCount > this.#lastVisibleBlockCount) {
-				this.#resetReadGroup();
-				this.#lastVisibleBlockCount = visibleBlockCount;
-			}
-			// Thinking stays collapsed by default, so only text or an image ends a run.
-			if (messageBreaksToolGroup(this.ctx.streamingMessage)) this.#resetToolGroup();
-
 			// Content blocks stream sequentially: a toolCall block can only begin
 			// after every preceding thinking/text block has closed, and the
 			// reveal's setTarget above force-completes the visible text for
@@ -1664,11 +1676,17 @@ export class EventController {
 			this.#reconcileStreamedToolCallIds(this.ctx.streamingMessage.content);
 			for (let contentIndex = 0; contentIndex < this.ctx.streamingMessage.content.length; contentIndex++) {
 				const content = this.ctx.streamingMessage.content[contentIndex]!;
-				if (content.type !== "toolCall") continue;
+				if (content.type !== "toolCall") {
+					this.#applyStreamedGroupBoundary(content, contentIndex);
+					continue;
+				}
+				// Completed calls leave pendingTools but remain in the cumulative timeline.
+				const isNew = !this.ctx.pendingTools.has(content.id) && !this.#toolTimelineComponents.has(content.id);
+				if (isNew) this.#removePriorTurnToolEntry(content.id);
 				const tool = this.ctx.viewSession.getToolByName(content.name);
 				const renderToolName = toolRenderName(content.name, tool);
 				if (renderToolName === "read") {
-					this.#resetToolGroup();
+					if (isNew) this.#resetToolGroup();
 					if (!readArgsHaveTarget(content.arguments)) {
 						// Args still streaming — defer until path is parseable so we can route to the
 						// read group (files + xd:// devices) vs ToolExecutionComponent (other internal URLs).
@@ -1704,14 +1722,6 @@ export class EventController {
 				let renderArgs: Record<string, unknown>;
 				const partialJson = getStreamingPartialJson(content);
 				const rawInput = content.customWireName !== undefined;
-				// `message_update` is cumulative — every update re-lists all blocks
-				// of the streaming message — so creation must also be guarded by the
-				// timeline map: `pendingTools` loses the id the moment a completion
-				// settles the card, and for server-resolved (Cursor) tools that can
-				// happen while the message is still streaming. Without the second
-				// check the next cumulative update would recreate a card for a call
-				// that already finished, permanently pending.
-				const isNew = !this.ctx.pendingTools.has(content.id) && !this.#toolTimelineComponents.has(content.id);
 				if (partialJson) {
 					renderArgs = this.#toolArgsReveal.setTarget(content.id, partialJson, {
 						rawInput,
@@ -1732,6 +1742,7 @@ export class EventController {
 					}
 					this.#resolveDisplaceablePoll(renderToolName);
 					if (this.#canGroupToolCall(renderToolName, renderArgs)) {
+						this.#resetReadGroup();
 						const group = this.#getToolGroup();
 						group.beginCall(renderToolName, renderArgs, content.id);
 						this.ctx.pendingTools.set(content.id, group);
@@ -1900,6 +1911,9 @@ export class EventController {
 			// the minted id and the streamed one ghosts until sealed.
 			this.#reconcileStreamedToolCallIds(this.ctx.streamingMessage.content);
 			this.ctx.streamingComponent.updateContent(displayTimeline.beforeTools);
+			for (let index = 0; index < displayMessage.content.length; index++) {
+				this.#applyStreamedGroupBoundary(displayMessage.content[index]!, index);
+			}
 
 			if (this.ctx.streamingMessage.stopReason !== "aborted" && this.ctx.streamingMessage.stopReason !== "error") {
 				for (const [toolCallId, component] of this.ctx.pendingTools.entries()) {
@@ -1937,7 +1951,7 @@ export class EventController {
 							this.#retractToolCardEntry(toolCallId, component);
 							this.#retractedToolCallIds.add(toolCallId);
 						} else {
-							component.seal();
+							component.seal(toolCallId);
 						}
 					}
 				}
@@ -2039,14 +2053,7 @@ export class EventController {
 		}
 		this.#resolveDisplaceablePoll(renderToolName);
 		if (!this.ctx.pendingTools.has(event.toolCallId)) {
-			const stale = this.#priorTurnToolComponents.get(event.toolCallId);
-			if (stale) {
-				this.#priorTurnToolComponents.delete(event.toolCallId);
-				// Never evict a shared read-group card: it may still carry sibling reads.
-				if (stale instanceof ToolExecutionComponent && this.ctx.chatContainer.children.includes(stale)) {
-					this.ctx.chatContainer.removeChild(stale);
-				}
-			}
+			this.#removePriorTurnToolEntry(event.toolCallId);
 			if (renderToolName === "read" && readArgsCollapseIntoGroup(event.args)) {
 				this.#resetToolGroup();
 				this.#trackReadToolCall(event.toolCallId, event.args);
@@ -2063,12 +2070,14 @@ export class EventController {
 			}
 
 			if (this.#canGroupToolCall(renderToolName, event.args)) {
+				this.#resetReadGroup();
 				const group = this.#getToolGroup();
 				group.beginCall(renderToolName, event.args, event.toolCallId);
 				this.#executionStartedCallIds.add(event.toolCallId);
 				this.ctx.pendingTools.set(event.toolCallId, group);
 				this.#toolTimelineComponents.set(event.toolCallId, group);
 				this.#settleHeldCompletionIfPresent(event.toolCallId, group);
+				this.#startToolApprovalPreview(event.toolCallId);
 				this.ctx.ui.requestRender();
 				return;
 			}
@@ -2177,11 +2186,7 @@ export class EventController {
 			// partial frame: `tool_execution_end` still owns the terminal result.
 			const isTerminal = isFinalAsyncState && this.#backgroundCallIds.has(event.toolCallId);
 			if (isTerminal) {
-				if (component instanceof ToolExecutionComponent) {
-					settleWithJobFrame(component, event.partialResult, event.toolCallId);
-				} else {
-					component.updateResult({ ...event.partialResult, isError: false }, false, event.toolCallId);
-				}
+				settleWithJobFrame(component, event.partialResult, event.toolCallId);
 				this.ctx.pendingTools.delete(event.toolCallId);
 				this.#backgroundCallIds.delete(event.toolCallId);
 			} else {
@@ -2247,11 +2252,7 @@ export class EventController {
 		if (parks && settled) {
 			// The job finished before the call returned: its settled frame, not the
 			// `running` start result, is the card's final state.
-			if (component instanceof ToolExecutionComponent) {
-				settleWithJobFrame(component, settled, event.toolCallId);
-			} else {
-				component.updateResult({ ...settled, isError: event.isError }, false, event.toolCallId);
-			}
+			settleWithJobFrame(component, settled, event.toolCallId);
 			this.ctx.pendingTools.delete(event.toolCallId);
 			return;
 		}
@@ -2658,7 +2659,6 @@ export class EventController {
 		this.#postToolAssistantComponents.clear();
 		this.#toolReplyBlocks.clear();
 		this.#resetReadGroup();
-		this.#lastToolGroup?.seal();
 		this.#resetToolGroup();
 		// The turn is over: nothing else lands this turn, so the waiting poll is
 		// final history — seal it instead of letting its spinner tick while idle.

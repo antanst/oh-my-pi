@@ -18,6 +18,7 @@ import type { ChatTranscriptBuilder } from "./chat-transcript-builder";
 import { padToWidth } from "../render/utils";
 import { isUsageRowBlock } from "../overlays/usage-row";
 import type { DescribeContext, NativeChild } from "../native/node";
+import { messageBreaksToolGroup } from "./tool-call-group";
 
 /** One selectable transcript item: a message entry plus its rendered block range. */
 export interface OutlineTarget {
@@ -31,7 +32,7 @@ export interface OutlineTarget {
 	start: number;
 	/** One past the last child rendered by this entry. */
 	end: number;
-	/** Entries this target spans: the turn plus any folded tool results. */
+	/** Display slices and folded results; split assistant slices retain their persisted entry IDs. */
 	entries: TranscriptEntry[];
 }
 
@@ -97,7 +98,7 @@ export class OutlineRowCache {
 
 /**
  * Append `entries` to `builder`, returning the selectable targets they
- * produce. Tool results fold into the previous target (so a turn's rewind
+ * produce. Tool results fold into their owning target (so a turn's rewind
  * and `/copy` keep its output, including lazily created children such as
  * the grouped-read card); notices and hidden messages that render nothing
  * are skipped. Usage rows flushed at the head of an append are attributed
@@ -105,7 +106,7 @@ export class OutlineRowCache {
  */
 export function appendOutlineEntries(builder: ChatTranscriptBuilder, entries: TranscriptEntry[]): OutlineTarget[] {
 	const targets: OutlineTarget[] = [];
-	for (const entry of entries) {
+	for (let entry of entries) {
 		const children = builder.container.children;
 		const before = children.length;
 		builder.append([entry]);
@@ -116,12 +117,60 @@ export function appendOutlineEntries(builder: ChatTranscriptBuilder, entries: Tr
 			if (previous && previous.end === start) previous.end = start + 1;
 			start++;
 		}
+		// A run can reuse a card mounted by an earlier assistant entry.
+		for (const component of builder.componentsForEntry(entry.id)) {
+			if (isUsageRowBlock(component)) continue;
+			const index = children.indexOf(component);
+			if (index >= 0) start = Math.min(start, index);
+		}
+		if (entry.type === "message" && entry.message.role === "toolResult") {
+			const owner = targets.find(target => target.start <= start && start < target.end) ?? targets.at(-1);
+			if (owner) {
+				owner.entryId = entry.id;
+				owner.entries.push(entry);
+				// A late result must not absorb prose already mounted after its group.
+				if (after > before) targets.at(-1)!.end = after;
+				continue;
+			}
+		}
+		// Collapsed thinking may have opened a target since this shared card.
+		while (targets.length > 1 && targets.at(-1)!.start > start) {
+			const trailing = targets.pop()!;
+			const owner = targets.at(-1)!;
+			owner.end = trailing.end;
+			owner.entryId = trailing.entryId;
+			owner.entries.push(...trailing.entries);
+		}
 		const previous = targets.at(-1);
-		if (entry.type === "message" && entry.message.role === "toolResult" && previous) {
+		if (previous && start < previous.end) {
+			let boundary: { index: number; offset: number } | undefined;
+			if (entry.type === "message" && entry.message.role === "assistant") {
+				for (let index = before; index < after; index++) {
+					const segment = builder.assistantSegmentForComponent(children[index]!);
+					if (!segment || !messageBreaksToolGroup(segment)) continue;
+					const offset = entry.message.content.indexOf(segment.content[0]!);
+					if (offset > 0) boundary = { index, offset };
+					break;
+				}
+			}
 			previous.entryId = entry.id;
-			previous.entries.push(entry);
-			if (after > previous.end) previous.end = after;
-			continue;
+			if (boundary && entry.type === "message" && entry.message.role === "assistant") {
+				// Keep persisted IDs, but give each target only its displayed content.
+				previous.entries.push({
+					...entry,
+					message: { ...entry.message, content: entry.message.content.slice(0, boundary.offset) },
+				});
+				previous.end = boundary.index;
+				start = boundary.index;
+				entry = {
+					...entry,
+					message: { ...entry.message, content: entry.message.content.slice(boundary.offset) },
+				};
+			} else {
+				previous.entries.push(entry);
+				previous.end = after;
+				continue;
+			}
 		}
 		if (start >= after) continue;
 		targets.push({

@@ -160,6 +160,8 @@ interface EvalRenderContext {
 	expanded?: boolean;
 	previewLines?: number;
 	timeout?: number;
+	/** The containing group already presents the input summary. */
+	resultOnly?: boolean;
 }
 
 interface EvalRenderCell {
@@ -1034,7 +1036,7 @@ export const evalToolRenderer = {
 				const agentEvents = allEvents.filter(e => e.op === "agent");
 				return {
 					cell,
-					code: formatEvalCodeForDisplay(cell.code, language),
+					code: options.renderContext?.resultOnly ? "" : formatEvalCodeForDisplay(cell.code, language),
 					language,
 					agentEvents,
 					otherEvents: agentEvents.length > 0 ? allEvents.filter(e => e.op !== "agent") : allEvents,
@@ -1090,11 +1092,12 @@ export const evalToolRenderer = {
 								}
 								const cellOptions: CodeCellOptions = {
 									code,
+									resultOnly: options.renderContext?.resultOnly,
 									language: languageForHighlighter(language),
-									showLanguage: true,
+									showLanguage: !options.renderContext?.resultOnly,
 									index: i,
 									total: cellResults.length,
-									title: cell.title,
+									title: options.renderContext?.resultOnly ? undefined : cell.title,
 									status: cell.status,
 									spinnerFrame,
 									duration: cell.durationMs,
@@ -1310,7 +1313,7 @@ export const evalToolRenderer = {
 				return evalCellBox(
 					{
 						language,
-						code: formatEvalCodeForDisplay(cell.code, language),
+						code: options.renderContext?.resultOnly ? "" : formatEvalCodeForDisplay(cell.code, language),
 						title: cell.title,
 						outputs: [...evalOutputNodes(cell.output, cell.views, previewLines, options.json === true)],
 						status: evalStatusSection(cell, expanded),
@@ -1357,7 +1360,9 @@ export const evalToolRenderer = {
 				argCells.length,
 				details,
 			),
-			body: runs.map((run, i) => evalCellBox(run, i, runs.length)),
+			body: runs.map((run, i) =>
+				evalCellBox(options.renderContext?.resultOnly ? { ...run, code: "" } : run, i, runs.length),
+			),
 			preview: "children",
 		};
 	},
