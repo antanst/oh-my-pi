@@ -2,8 +2,8 @@
 # Update the custom branch from the newest upstream release tag, rebuild omp,
 # and install it.
 #
-# Flow: fetch (including tags) -> pick the newest vX.Y.Z tag -> checkout
-# custom -> rebase onto that tag unless custom already contains it (asked
+# Flow: fetch -> pick the newest upstream vX.Y.Z tag -> checkout
+# custom -> rebase onto that release commit unless custom already contains it (asked
 # when interactive; aborting cleanly on conflict) -> skip everything when
 # the installed omp already matches this version -> bun install -> build
 # to ~/.local/bin/omp. The stock binary is backed up once, the first
@@ -27,6 +27,7 @@ for arg in "$@"; do
 	esac
 done
 
+# Report a failed update without continuing to installation.
 die() {
 	echo "$*" >&2
 	exit 1
@@ -35,23 +36,33 @@ die() {
 ROOT="$(git rev-parse --show-toplevel 2>/dev/null)" || die "Not inside a git repository."
 cd "$ROOT" || die "Cannot enter repository root."
 
-# The binary build populates the embedded stats bundle; restore the checked-in
-# empty state on every exit so the next run is never flagged dirty.
-trap 'git checkout -- packages/stats/src/embedded-client.generated.txt 2>/dev/null' EXIT
-
 DIRTY="$(git status --porcelain --untracked-files=no)" || die "git status failed."
 if [ -n "$DIRTY" ]; then
 	die "Working tree is dirty — commit or stash first."
 fi
 
+# Cleanup is safe only after rejecting pre-existing edits.
+trap 'git checkout -- packages/stats/src/embedded-client.generated.txt 2>/dev/null' 0
+trap 'exit 129' HUP
+trap 'exit 130' INT
+trap 'exit 143' TERM
+
 START_BRANCH="$(git branch --show-current 2>/dev/null)"
 
-echo "==> Fetching origin and upstream (with tags)"
-git fetch origin || die "git fetch origin failed."
-git fetch --tags upstream || die "git fetch upstream failed."
+echo "==> Fetching origin and upstream"
+git fetch --no-tags origin || die "git fetch origin failed."
+git fetch --no-tags upstream || die "git fetch upstream failed."
 
-# Newest release tag; anything not matching vX.Y.Z exactly is ignored.
-TAG="$(git tag -l --sort=-v:refname | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | head -1)"
+# Only upstream's advertised releases count, never local or origin tags.
+RELEASES="$(git ls-remote --tags --refs --sort=-v:refname upstream)" || die "Cannot list upstream releases."
+RELEASE="$(printf '%s\n' "$RELEASES" | awk '$2 ~ /^refs\/tags\/v[0-9]+\.[0-9]+\.[0-9]+$/ { print $1, substr($2, 11); exit }')"
+TAG="${RELEASE#* }"
+TARGET=""
+if [ -n "$TAG" ]; then
+	# Fetch by advertised object, without creating or overwriting a local tag.
+	git fetch --no-tags upstream "${RELEASE%% *}" || die "Cannot fetch upstream release $TAG."
+	TARGET="$(git rev-parse --verify 'FETCH_HEAD^{commit}')" || die "Upstream release $TAG is not a commit."
+fi
 
 if ! git show-ref --verify --quiet refs/heads/custom; then
 	die "Branch 'custom' not found — create it first (git checkout -b custom v18.12.6)."
@@ -63,7 +74,7 @@ git checkout custom || die "Cannot check out custom."
 # Rebase only when the newest release tag is not already contained.
 REBASE=0
 DECLINED=0
-if [ -n "$TAG" ] && ! git merge-base --is-ancestor "$TAG" custom; then
+if [ -n "$TAG" ] && ! git merge-base --is-ancestor "$TARGET" custom; then
 	REBASE=1
 fi
 
@@ -78,7 +89,7 @@ fi
 
 if [ "$REBASE" -eq 1 ]; then
 	echo "==> Rebasing custom onto $TAG"
-	if ! git rebase "$TAG"; then
+	if ! git rebase "$TARGET"; then
 		git rebase --abort
 		if [ -n "$START_BRANCH" ]; then
 			git checkout "$START_BRANCH" 2>/dev/null
@@ -127,7 +138,7 @@ echo "==> Building native addon"
 bun run build:native || die "Native build failed."
 
 echo "==> Building binary"
-(cd packages/coding-agent && bun scripts/build-binary.ts) || die "Build failed."
+(unset CROSS_TARGET; cd packages/coding-agent && bun scripts/build-binary.ts) || die "Build failed."
 
 echo "==> Installing"
 if [ -f "$HOME/.local/bin/omp" ] && [ ! -f "$HOME/.local/bin/omp.bak-stock" ]; then
