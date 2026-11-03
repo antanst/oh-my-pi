@@ -6,15 +6,17 @@
  * result stays in the session and in the model context.
  */
 import type { AgentTool } from "@oh-my-pi/pi-agent-core";
+import type { Usage } from "@oh-my-pi/pi-ai";
 import { sanitizeText } from "@oh-my-pi/pi-utils";
 import { withHidden } from "../native/describe";
 import type { DescribeContext, NativeNode } from "../native/node";
+import { Text } from "../components/text";
+import { formatUsageRow } from "../overlays/usage-row";
 import { WidthAwareText } from "../render/width-aware-text";
 import { isFramedBlockComponent } from "../render/output-block";
 import { theme } from "../theme";
 import { type Component, Container } from "../tui";
 import { replaceTabs, sliceByColumn, truncateToWidth, visibleWidth } from "../utils";
-import { toolRenderers } from "../tools";
 import {
 	ToolExecutionComponent,
 	type ToolExecutionHandle,
@@ -23,22 +25,9 @@ import {
 	toolRenderName,
 } from "./tool-execution";
 
-/** Built-in tool names with a TUI renderer; extensions may re-register these. */
-const BUILTIN_RENDERED_TOOLS = new Set(Object.keys(toolRenderers));
-
-/** A built-in tool joins a run; `read` keeps its own group. */
-export function shouldGroupToolCall(toolName: string, isBuiltIn: boolean): boolean {
-	return toolName !== "read" && (isBuiltIn || BUILTIN_RENDERED_TOOLS.has(toolName));
-}
-
-/**
- * Assistant text or an image ends a tool run. Thinking does not: it is collapsed
- * by default, so it must not split a visible run of calls.
- */
-export function messageBreaksToolGroup(message: { content: ReadonlyArray<{ type: string; text?: string }> }): boolean {
-	return message.content.some(
-		part => part.type === "image" || (part.type === "text" && (part.text ?? "").trim().length > 0),
-	);
+/** Only built-in tools join a run, even if an extension uses a built-in name. */
+export function shouldGroupToolCall(_toolName: string, isBuiltIn: boolean): boolean {
+	return isBuiltIn;
 }
 
 type EntryStatus = "pending" | "success" | "error";
@@ -56,6 +45,16 @@ interface GroupEntry {
 	rendererVersion?: number;
 }
 
+interface GroupUsageRow {
+	anchor: string;
+	toolCallIds: string[];
+	usage: Usage;
+	durationMs?: number;
+	ttftMs?: number;
+	timestamp?: number;
+	turnElapsedMs?: number;
+}
+
 export interface ToolCallGroupOptions {
 	/** Resolve the live tool definition for its custom call renderer. */
 	resolveTool?: (name: string) => AgentTool | undefined;
@@ -63,6 +62,8 @@ export interface ToolCallGroupOptions {
 	ui?: ToolExecutionUi;
 	cwd?: string;
 	showImages?: boolean;
+	showReadImages?: boolean;
+	showReadContentPreview?: boolean;
 }
 
 const SUMMARY_WIDTH = 400;
@@ -86,6 +87,7 @@ function summaryLine(summary: string, suffix: string, width: number): string {
  * format stays in the group; otherwise a short built-in summary is used.
  */
 export function summarizeToolCall(toolName: string, args: unknown, tool: AgentTool | undefined): string {
+	if (toolName === "read") return builtInSummary(toolName, args);
 	const custom = renderCustomCall(tool, args);
 	if (custom) return custom;
 	return builtInSummary(toolName, args);
@@ -136,6 +138,8 @@ function builtInSummary(toolName: string, args: unknown): string {
 			const query = firstString(args, ["query"]);
 			return `Find "${query ?? ""}"${path ? ` · ${path}` : ""}`.trim();
 		}
+		case "read":
+			return `Read ${sanitizeText(path ?? "")}`.trim();
 		case "write":
 		case "edit":
 			return `${toolName === "write" ? "Write" : "Edit"} ${path ?? ""}`.trim();
@@ -162,6 +166,7 @@ function firstTextLine(result: ToolResultFrame): string | undefined {
 
 export class ToolCallGroupComponent extends Container implements ToolExecutionHandle {
 	#entries = new Map<string, GroupEntry>();
+	#usageRows: GroupUsageRow[] = [];
 	#outputExpanded = false;
 	#expanded = false;
 	#toolActivityVisible = true;
@@ -295,6 +300,10 @@ export class ToolCallGroupComponent extends Container implements ToolExecutionHa
 		]);
 		this.#entries.clear();
 		for (const [key, value] of reordered) this.#entries.set(key, value);
+		for (const row of this.#usageRows) {
+			row.toolCallIds = row.toolCallIds.map(id => (id === oldId ? newId : id));
+			if (row.anchor === oldId) row.anchor = newId;
+		}
 		this.#updateDisplay();
 	}
 
@@ -302,6 +311,11 @@ export class ToolCallGroupComponent extends Container implements ToolExecutionHa
 	removeEntry(toolCallId: string): boolean {
 		this.#entries.get(toolCallId)?.renderer?.dispose();
 		if (!this.#entries.delete(toolCallId)) return this.#entries.size === 0;
+		for (const row of this.#usageRows) {
+			row.toolCallIds = row.toolCallIds.filter(id => id !== toolCallId);
+			if (row.anchor === toolCallId) row.anchor = row.toolCallIds[row.toolCallIds.length - 1] ?? "";
+		}
+		this.#usageRows = this.#usageRows.filter(row => row.toolCallIds.length > 0);
 		this.#updateDisplay();
 		return this.#entries.size === 0;
 	}
@@ -317,6 +331,26 @@ export class ToolCallGroupComponent extends Container implements ToolExecutionHa
 		entry.renderer?.updateResult(result, isPartial);
 		if (this.#sealed || entry.sealed) entry.renderer?.stopAnimation();
 		this.#updateDisplay();
+	}
+
+	/** Attach a read-only turn's metrics to its last represented call. */
+	attachUsage(
+		toolCallIds: readonly string[],
+		usage: Usage,
+		durationMs?: number,
+		ttftMs?: number,
+		timestamp?: number,
+		turnElapsedMs?: number,
+	): boolean {
+		const attached = toolCallIds.filter(id => this.#entries.has(id));
+		const anchor = attached[attached.length - 1];
+		if (!anchor) return false;
+		const row = { anchor, toolCallIds: attached, usage, durationMs, ttftMs, timestamp, turnElapsedMs };
+		const index = this.#usageRows.findIndex(existing => existing.anchor === anchor);
+		if (index < 0) this.#usageRows.push(row);
+		else this.#usageRows[index] = row;
+		this.#updateDisplay();
+		return true;
 	}
 
 	setArgsComplete(_toolCallId?: string): void {}
@@ -356,12 +390,19 @@ export class ToolCallGroupComponent extends Container implements ToolExecutionHa
 			entry.renderer = new ToolExecutionComponent(
 				toolRenderName(entry.toolName, tool),
 				entry.args,
-				{ resultOnly: true, showImages: this.#options.showImages },
+				{
+					resultOnly: true,
+					showImages:
+						entry.toolName === "read"
+							? (this.#options.showReadImages ?? this.#options.showImages)
+							: this.#options.showImages,
+				},
 				tool,
 				this.#options.ui ?? DEFAULT_UI,
 				this.#options.cwd,
 				entry.toolCallId,
 			);
+			if (entry.toolName === "read") entry.renderer.setExpanded(this.#outputExpanded);
 			entry.renderer.updateResult(entry.result, entry.status === "pending");
 			if (this.#sealed || entry.sealed) entry.renderer.seal();
 		}
@@ -376,7 +417,8 @@ export class ToolCallGroupComponent extends Container implements ToolExecutionHa
 		this.clear();
 		for (const entry of entries) {
 			const visible = this.#expanded || entry === latest;
-			if (!visible || !this.#outputExpanded) {
+			const showResult = this.#outputExpanded || (entry.toolName === "read" && this.#options.showReadContentPreview);
+			if (!visible || !showResult) {
 				entry.renderer?.dispose();
 				entry.renderer = undefined;
 			}
@@ -388,9 +430,23 @@ export class ToolCallGroupComponent extends Container implements ToolExecutionHa
 					0,
 				),
 			);
-			if (this.#outputExpanded) {
+			if (showResult) {
 				const result = this.#resultComponent(entry);
+				if (entry.toolName === "read") result?.setExpanded(this.#outputExpanded);
 				if (result) this.addChild(result);
+			}
+			const rows = this.#expanded ? this.#usageRows.filter(row => row.anchor === entry.toolCallId) : this.#usageRows;
+			for (const row of rows) {
+				this.addChild(
+					new Text(
+						theme.fg(
+							"dim",
+							`   ${formatUsageRow(row.usage, row.durationMs, row.ttftMs, row.timestamp, row.turnElapsedMs)}`,
+						),
+						0,
+						0,
+					),
+				);
 			}
 		}
 	}

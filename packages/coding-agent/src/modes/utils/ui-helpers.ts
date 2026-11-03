@@ -44,14 +44,10 @@ import {
 	replyDisplayMessage,
 	toolResultReplies,
 } from "@oh-my-pi/pi-tui/chat/reply-write";
-import {
-	messageBreaksToolGroup,
-	shouldGroupToolCall,
-	ToolCallGroupComponent,
-} from "@oh-my-pi/pi-tui/chat/tool-call-group";
+import { shouldGroupToolCall, ToolCallGroupComponent } from "@oh-my-pi/pi-tui/chat/tool-call-group";
 import { SkillMessageComponent } from "@oh-my-pi/pi-tui/chat/skill-message";
 import { StrippedToolCallsPlaceholder } from "@oh-my-pi/pi-tui/chat/stripped-tool-calls-placeholder";
-import { imageContent, textContent } from "@oh-my-pi/pi-tui/chat/transcript-entry";
+import { imageContent, messageBreaksToolGroup, textContent } from "@oh-my-pi/pi-tui/chat/transcript-entry";
 import { ToolActivityContainer } from "@oh-my-pi/pi-tui/chrome/tool-activity";
 import {
 	isSettledJobFrame,
@@ -539,6 +535,8 @@ export class UiHelpers {
 					ui: this.ctx.ui,
 					cwd: this.ctx.viewSession.sessionManager.getCwd(),
 					showImages: cfgTerminalShowImages.get(this.ctx.settings),
+					showReadContentPreview: cfgReadToolResultPreview.get(this.ctx.settings),
+					showReadImages: false,
 				});
 				toolGroup.setGroupExpanded(this.ctx.toolGroupExpanded);
 				toolGroup.setExpanded(this.ctx.toolOutputExpanded);
@@ -556,24 +554,34 @@ export class UiHelpers {
 		let pendingUsageTtft: number | undefined;
 		let pendingUsageTimestamp: number | undefined;
 		let pendingReadUsageCallIds: string[] | undefined;
+		let pendingUsageToolGroup: ToolCallGroupComponent | null = null;
 		let pendingUsageTurnElapsed: number | undefined;
 		let turnStartedAt: number | undefined;
 		const flushPendingUsage = () => {
 			if (!pendingUsage) return;
 			const usageAttached =
 				pendingReadUsageCallIds !== undefined &&
-				(readGroup?.attachUsage(
+				(pendingUsageToolGroup?.attachUsage(
 					pendingReadUsageCallIds,
 					pendingUsage,
 					pendingUsageDuration,
 					pendingUsageTtft,
 					pendingUsageTimestamp,
 					pendingUsageTurnElapsed,
-				) ??
+				) ||
+					readGroup?.attachUsage(
+						pendingReadUsageCallIds,
+						pendingUsage,
+						pendingUsageDuration,
+						pendingUsageTtft,
+						pendingUsageTimestamp,
+						pendingUsageTurnElapsed,
+					) ||
 					false);
 			if (!usageAttached) {
 				readGroup?.seal();
 				readGroup = null;
+				sealToolGroup();
 				this.ctx.chatContainer.addChild(
 					createUsageRowBlock(
 						pendingUsage,
@@ -589,6 +597,7 @@ export class UiHelpers {
 			pendingUsageTtft = undefined;
 			pendingUsageTimestamp = undefined;
 			pendingReadUsageCallIds = undefined;
+			pendingUsageToolGroup = null;
 			pendingUsageTurnElapsed = undefined;
 		};
 		// Rebuild-time mirror of the event controller's displaceable-poll
@@ -705,7 +714,11 @@ export class UiHelpers {
 					const renderToolName = toolRenderName(content.name, tool);
 					resolveWaitingPoll(renderToolName);
 
-					if (renderToolName === "read" && readArgsCollapseIntoGroup(content.arguments)) {
+					if (
+						renderToolName === "read" &&
+						!cfgDisplayGroupConsecutiveTools.get(this.ctx.settings) &&
+						readArgsCollapseIntoGroup(content.arguments)
+					) {
 						sealToolGroup();
 						if (hasErrorStop && errorMessage) {
 							if (!readGroup) {
@@ -772,6 +785,12 @@ export class UiHelpers {
 					) {
 						const group = ensureToolGroup();
 						group.beginCall(renderToolName, renderArgs, content.id);
+						if (renderToolName === "read" && assistantComponent) {
+							readToolCallAssistantComponents.set(content.id, assistantComponent);
+							if (this.ctx.viewSession.isStreaming) {
+								this.ctx.eventController?.inheritReadToolAssistant(content.id, assistantComponent);
+							}
+						}
 						if (hasErrorStop && errorMessage) {
 							group.updateResult(
 								{ content: [{ type: "text", text: errorMessage }], isError: true },
@@ -827,12 +846,34 @@ export class UiHelpers {
 				pendingUsageTtft = message.ttft;
 				pendingUsageTimestamp = message.timestamp;
 				pendingReadUsageCallIds = pendingUsage ? groupedReadUsageCallIds(message) : undefined;
+				const usageOwner = pendingReadUsageCallIds && this.ctx.pendingTools.get(pendingReadUsageCallIds[0]!);
+				pendingUsageToolGroup = usageOwner instanceof ToolCallGroupComponent ? usageOwner : toolGroup;
 				pendingUsageTurnElapsed = cfgDisplayShowTurnTime.get(this.ctx.settings)
 					? turnElapsedMs(turnStartedAt, message)
 					: undefined;
 			} else if (message.role === "toolResult") {
 				if (options.preservedLiveToolCallIds?.has(message.toolCallId)) continue;
 				const pendingReadComponent = this.ctx.pendingTools.get(message.toolCallId);
+				if (message.toolName === "read" && pendingReadComponent instanceof ToolCallGroupComponent) {
+					const assistantComponent = readToolCallAssistantComponents.get(message.toolCallId);
+					const images = message.content.filter((content): content is ImageContent => content.type === "image");
+					const mediaPath = readMediaPath(message.details);
+					if (images.length > 0 || mediaPath) {
+						assistantComponent?.setToolResultImages(message.toolCallId, images, mediaPath);
+					}
+					if (
+						images.length > 0 &&
+						cfgTerminalShowImages.get(this.ctx.settings) &&
+						!this.ctx.hideToolActivity &&
+						pendingReadComponent === toolGroup
+					) {
+						sealToolGroup();
+					}
+					if (this.ctx.viewSession.isStreaming) {
+						this.ctx.eventController?.inheritReadToolAssistant(message.toolCallId, undefined);
+					}
+					readToolCallAssistantComponents.delete(message.toolCallId);
+				}
 				const isReadGroupResult =
 					message.toolName === "read" &&
 					(!pendingReadComponent || pendingReadComponent instanceof ReadToolGroupComponent);

@@ -5,9 +5,11 @@
 ### Added
 
 - Grouped tool-call cards now render each call's result through that tool's renderer while tool-output expansion (Ctrl+O) is on — collapsed cards show the latest call's result, Alt+X rows show every result; staging stays renderer-owned.
+- Grouped tool-call cards include reads with other built-in calls
 
 ### Fixed
 
+- Todo reminders and tool previews load without renderer initialization errors
 - A running tool squeezed to one row keeps its compact activity row, so the elapsed time stays visible
 - Grouped built-in results show output without duplicate command previews, retain late results, and honor hidden activity on native surfaces
 - Group summaries fit one terminal row; Alt+X expands rows independently of Ctrl+O in shared transcript viewers

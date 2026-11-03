@@ -29,6 +29,7 @@ import {
 } from "./messages";
 import {
 	imageContent,
+	messageBreaksToolGroup,
 	textContent,
 	type TranscriptEntryLike as TranscriptEntry,
 	transcriptEntryMessage,
@@ -66,7 +67,7 @@ import {
 } from "./late-diagnostics-message";
 import { groupedReadUsageCallIds, ReadToolGroupComponent, readArgsCollapseIntoGroup } from "./read-tool-group";
 import { isReplyWrite, ReplyWriteComponent, replyDisplayMessage, toolResultReplies } from "./reply-write";
-import { messageBreaksToolGroup, shouldGroupToolCall, ToolCallGroupComponent } from "./tool-call-group";
+import { shouldGroupToolCall, ToolCallGroupComponent } from "./tool-call-group";
 import { SkillMessageComponent } from "./skill-message";
 import { ToolExecutionComponent, type ToolExecutionHandle } from "./tool-execution";
 import { TranscriptContainer } from "../chrome/transcript-container";
@@ -102,6 +103,7 @@ export class ChatTranscriptBuilder {
 	#pendingUsageTtft: number | undefined;
 	#pendingUsageTimestamp: number | undefined;
 	#pendingReadUsageCallIds: string[] | undefined;
+	#pendingUsageToolGroup: ToolCallGroupComponent | null = null;
 	#pendingUsageElapsedMs: number | undefined;
 	#turnStartedAt: number | undefined;
 	readonly #turnUsage = new TurnUsageTally();
@@ -198,6 +200,7 @@ export class ChatTranscriptBuilder {
 		this.#pendingUsageTtft = undefined;
 		this.#pendingUsageTimestamp = undefined;
 		this.#pendingReadUsageCallIds = undefined;
+		this.#pendingUsageToolGroup = null;
 		this.#pendingUsageElapsedMs = undefined;
 		this.#turnStartedAt = undefined;
 		this.#turnUsage.reset();
@@ -302,6 +305,7 @@ export class ChatTranscriptBuilder {
 				ui: this.#deps.ui,
 				cwd: this.#deps.cwd,
 				showImages: displayPreferences.showImages,
+				showReadContentPreview: displayPreferences.readToolResultPreview,
 			});
 			this.#toolGroup.setGroupExpanded(this.#groupExpanded);
 			this.#trackExpandable(this.#toolGroup);
@@ -314,24 +318,33 @@ export class ChatTranscriptBuilder {
 	}
 
 	// Defer per-turn metrics until the turn's tool results have materialized.
-	// Read-only invisible turns attach the metrics to their shared compact
-	// group; every other turn keeps the standalone row below its tool blocks.
+	// Read-only invisible turns attach metrics to their group; other turns
+	// keep the standalone row below their tool blocks.
 	#flushPendingUsage(): void {
 		if (!this.#pendingUsage) return;
 		const usageAttached =
 			this.#pendingReadUsageCallIds !== undefined &&
-			(this.#readGroup?.attachUsage(
+			(this.#pendingUsageToolGroup?.attachUsage(
 				this.#pendingReadUsageCallIds,
 				this.#pendingUsage,
 				this.#pendingUsageDuration,
 				this.#pendingUsageTtft,
 				this.#pendingUsageTimestamp,
 				this.#pendingUsageElapsedMs,
-			) ??
+			) ||
+				this.#readGroup?.attachUsage(
+					this.#pendingReadUsageCallIds,
+					this.#pendingUsage,
+					this.#pendingUsageDuration,
+					this.#pendingUsageTtft,
+					this.#pendingUsageTimestamp,
+					this.#pendingUsageElapsedMs,
+				) ||
 				false);
 		if (!usageAttached) {
 			this.#readGroup?.seal();
 			this.#readGroup = null;
+			this.#sealToolGroup();
 			this.container.addChild(
 				createUsageRowBlock(
 					this.#pendingUsage,
@@ -347,6 +360,7 @@ export class ChatTranscriptBuilder {
 		this.#pendingUsageTtft = undefined;
 		this.#pendingUsageTimestamp = undefined;
 		this.#pendingReadUsageCallIds = undefined;
+		this.#pendingUsageToolGroup = null;
 		this.#pendingUsageElapsedMs = undefined;
 	}
 
@@ -537,8 +551,13 @@ export class ChatTranscriptBuilder {
 			if (content.type !== "toolCall") continue;
 			this.#resolveWaitingPoll(content.name);
 
+			const builtIn = this.#deps.isBuiltInTool?.(content.name) ?? true;
 			const afterToolSegment = timeline.afterToolCalls.get(content.id);
-			if (content.name === "read" && readArgsCollapseIntoGroup(content.arguments)) {
+			if (
+				!displayPreferences.groupConsecutiveTools &&
+				content.name === "read" &&
+				readArgsCollapseIntoGroup(content.arguments)
+			) {
 				this.#sealToolGroup();
 				if (hasErrorStop && errorMessage) {
 					const group = this.#ensureReadGroup();
@@ -562,7 +581,6 @@ export class ChatTranscriptBuilder {
 
 			this.#readGroup?.seal();
 			this.#readGroup = null;
-			const builtIn = this.#deps.isBuiltInTool?.(content.name) ?? true;
 			const replyWrite = builtIn && isReplyWrite(content.name, content.arguments) === true;
 			if (!replyWrite && displayPreferences.groupConsecutiveTools && shouldGroupToolCall(content.name, builtIn)) {
 				const group = this.#ensureToolGroup();
@@ -631,6 +649,7 @@ export class ChatTranscriptBuilder {
 		this.#pendingUsageTtft = message.ttft;
 		this.#pendingUsageTimestamp = message.timestamp;
 		this.#pendingReadUsageCallIds = this.#pendingUsage ? groupedReadUsageCallIds(message) : undefined;
+		this.#pendingUsageToolGroup = this.#pendingReadUsageCallIds ? this.#toolGroup : null;
 		this.#pendingUsageElapsedMs =
 			this.#pendingUsage && displayPreferences.showTurnTime ? this.#turnElapsedMs(message) : undefined;
 	}
@@ -638,7 +657,10 @@ export class ChatTranscriptBuilder {
 	#appendToolResult(message: Extract<AgentMessage, { role: "toolResult" }>): void {
 		const pending = this.#pendingTools.get(message.toolCallId);
 		if (pending) this.#entryComponentsInProgress?.push(pending);
-		const isReadGroupResult = message.toolName === "read" && (!pending || pending instanceof ReadToolGroupComponent);
+		const isReadGroupResult =
+			message.toolName === "read" &&
+			(pending instanceof ReadToolGroupComponent ||
+				(!pending && (this.#readArgs.has(message.toolCallId) || !displayPreferences.groupConsecutiveTools)));
 		if (isReadGroupResult) {
 			let component = pending;
 			if (!component) {
@@ -667,6 +689,15 @@ export class ChatTranscriptBuilder {
 		}
 		if (!pending) return;
 		pending.updateResult(message, false, message.toolCallId);
+		if (
+			message.toolName === "read" &&
+			pending === this.#toolGroup &&
+			displayPreferences.showImages &&
+			!displayPreferences.hideToolActivity &&
+			message.content.some(part => part.type === "image")
+		) {
+			this.#sealToolGroup();
+		}
 		this.#pendingTools.delete(message.toolCallId);
 		if (message.toolName === "wait" && pending instanceof ToolExecutionComponent && pending.isDisplaceableBlock()) {
 			this.#waitingPoll = pending;

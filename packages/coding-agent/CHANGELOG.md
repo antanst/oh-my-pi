@@ -11,9 +11,12 @@
 ### Changed
 
 - The custom updater now runs from `scripts-local/local-update.sh`
+- Grouped tool-call cards now include reads, including internal URL reads, in call order
 
 ### Fixed
 
+- The local test runner isolates terminal settings that can cause terminal tests to fail
+- The local test runner uses the installed Chrome for Testing instead of an incompatible system browser
 - Grouped tool calls show a `task` call as a one-line `Task` summary instead of the card's full border
 - Grouped tools display built-in results, complete approval previews, and retain partial updates and background failures
 - Grouped transcripts preserve prose, read, and retry order across live updates and replay; shared viewers support independent row and output controls

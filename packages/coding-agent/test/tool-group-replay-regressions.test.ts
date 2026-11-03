@@ -7,7 +7,7 @@ import type { AssistantMessage, ToolCall } from "@oh-my-pi/pi-ai";
 import { resetSettingsForTest, Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { UiHelpers } from "@oh-my-pi/pi-coding-agent/modes/utils/ui-helpers";
 import type { SessionContext } from "@oh-my-pi/pi-coding-agent/session/session-context";
-import { type Component, setKeybindings } from "@oh-my-pi/pi-tui";
+import { type Component, setKeybindings, TERMINAL } from "@oh-my-pi/pi-tui";
 import { KeybindingsManager, type KeyId } from "@oh-my-pi/pi-tui/app-keybindings";
 import { ChatTranscriptBuilder } from "@oh-my-pi/pi-tui/chat/chat-transcript-builder";
 import {
@@ -88,9 +88,13 @@ function builder(): ChatTranscriptBuilder {
 }
 
 /** Replay through the main transcript's actual helper. */
-function replay(messages: AgentMessage[]): readonly Component[] {
+function replay(messages: AgentMessage[], grouping = true, showImages = false): readonly Component[] {
 	const context = createInteractiveModeContext({
-		settings: Settings.isolated({ "display.groupConsecutiveTools": true, "display.showTokenUsage": false }),
+		settings: Settings.isolated({
+			"display.groupConsecutiveTools": grouping,
+			"display.showTokenUsage": false,
+			"terminal.showImages": showImages,
+		}),
 	});
 	const helpers = new UiHelpers(context);
 	context.addMessageToChat = helpers.addMessageToChat.bind(helpers);
@@ -124,6 +128,126 @@ afterEach(() => {
 });
 
 describe("tool group replay boundaries", () => {
+	it("main replay keeps a read image visible and starts a new run after it", () => {
+		const protocol = Object.getOwnPropertyDescriptor(TERMINAL, "imageProtocol")!;
+		Object.defineProperty(TERMINAL, "imageProtocol", { value: null });
+		try {
+			const read: ToolCall = { type: "toolCall", id: "image", name: "read", arguments: { path: "pixel.png" } };
+			const children = replay(
+				[
+					assistant([call("one"), read]),
+					result("one"),
+					{
+						role: "toolResult",
+						toolCallId: "image",
+						toolName: "read",
+						content: [
+							{
+								type: "image",
+								mimeType: "image/png",
+								data: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8DwHwAFBQIAX8jx0gAAAABJRU5ErkJggg==",
+							},
+						],
+						isError: false,
+						timestamp: 2,
+					},
+					assistant([call("two")]),
+					result("two"),
+				],
+				true,
+				true,
+			);
+			expect(children.filter(child => child instanceof ToolCallGroupComponent)).toHaveLength(2);
+			expect(children.map(plain).join("\n")).toContain("[Image: image/png]");
+		} finally {
+			Object.defineProperty(TERMINAL, "imageProtocol", protocol);
+		}
+	});
+
+	it("a late read image does not split a newer run", () => {
+		const read: ToolCall = { type: "toolCall", id: "image", name: "read", arguments: { path: "pixel.png" } };
+		const children = replay(
+			[
+				assistant([read, { type: "text", text: "boundary" }, call("one")]),
+				{
+					role: "toolResult",
+					toolCallId: "image",
+					toolName: "read",
+					content: [
+						{
+							type: "image",
+							mimeType: "image/png",
+							data: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8DwHwAFBQIAX8jx0gAAAABJRU5ErkJggg==",
+						},
+					],
+					isError: false,
+					timestamp: 2,
+				},
+				assistant([call("two")]),
+				result("one"),
+				result("two"),
+			],
+			true,
+			true,
+		);
+		const groups = children.filter(child => child instanceof ToolCallGroupComponent);
+		expect(groups).toHaveLength(2);
+		groups[1]!.setGroupExpanded(true);
+		expect(plain(groups[1]!)).toContain("command-one");
+		expect(plain(groups[1]!)).toContain("command-two");
+	});
+
+	it("main replay retains mixed read results in call order after a group boundary", () => {
+		const read: ToolCall = { type: "toolCall", id: "read", name: "read", arguments: { path: "skill://example" } };
+		const children = replay([
+			assistant([call("one"), read, call("two"), { type: "text", text: "boundary" }]),
+			result("two"),
+			{
+				role: "toolResult",
+				toolCallId: "read",
+				toolName: "read",
+				content: [{ type: "text", text: "read failure" }],
+				isError: true,
+				timestamp: 2,
+			},
+			result("one"),
+		]);
+		const groups = children.filter(child => child instanceof ToolCallGroupComponent);
+		expect(groups).toHaveLength(1);
+		const group = groups[0]!;
+		group.setGroupExpanded(true);
+		group.setExpanded(true);
+		const rendered = plain(group);
+		const positions = ["command-one", "skill://example", "command-two"].map(text => rendered.indexOf(text));
+		expect(positions.every(position => position >= 0)).toBe(true);
+		expect(positions).toEqual([...positions].sort((a, b) => a - b));
+		expect(rendered).toContain("read failure");
+		expect(rendered).toContain("output-one");
+		expect(rendered).toContain("output-two");
+	});
+
+	it("main replay keeps read rendering separate when grouping is disabled", () => {
+		const read: ToolCall = { type: "toolCall", id: "read", name: "read", arguments: { path: "file.txt" } };
+		const children = replay(
+			[
+				assistant([call("one"), read, call("two")]),
+				result("one"),
+				{
+					role: "toolResult",
+					toolCallId: "read",
+					toolName: "read",
+					content: [{ type: "text", text: "file contents" }],
+					isError: false,
+					timestamp: 2,
+				},
+				result("two"),
+			],
+			false,
+		);
+		expect(children.filter(child => child instanceof ToolCallGroupComponent)).toHaveLength(0);
+		expect(children.map(plain).join("\n")).toContain("file.txt");
+	});
+
 	for (const surface of ["main", "builder"] as const) {
 		it(`${surface} keeps within-message and trailing prose between the correct groups`, () => {
 			const messages = [

@@ -111,11 +111,12 @@ describe("ToolCallGroupComponent", () => {
 		await initTheme();
 	});
 
-	it("joins built-in tools except read", () => {
+	it("groups only built-in tools, including reads", () => {
 		expect(shouldGroupToolCall("bash", true)).toBe(true);
 		expect(shouldGroupToolCall("grep", true)).toBe(true);
-		expect(shouldGroupToolCall("read", true)).toBe(false);
-		expect(shouldGroupToolCall("bash", false)).toBe(true);
+		expect(shouldGroupToolCall("read", true)).toBe(true);
+		expect(shouldGroupToolCall("bash", false)).toBe(false);
+		expect(shouldGroupToolCall("read", false)).toBe(false);
 		expect(shouldGroupToolCall("custom_tool", false)).toBe(false);
 	});
 
@@ -151,6 +152,47 @@ describe("ToolCallGroupComponent", () => {
 		expect(rows[0]).toContain("$ echo one");
 		expect(rows[1]).toContain("Grep alpha · src");
 		expect(rows).toHaveLength(2);
+	});
+
+	it("shows read paths in mixed call order, including internal URLs", () => {
+		const group = new ToolCallGroupComponent();
+		group.beginCall("find", { query: "routes" }, "find");
+		group.beginCall("read", { path: "skill://example" }, "read");
+		group.beginCall("grep", { pattern: "needle" }, "grep");
+		group.setGroupExpanded(true);
+		const rows = plain(group).split("\n");
+		expect(rows[0]).toContain("Find");
+		expect(rows[1]).toContain("Read skill://example");
+		expect(rows[2]).toContain("Grep needle");
+	});
+
+	it("preserves failed late reads and sibling calls after finalization", () => {
+		const group = new ToolCallGroupComponent();
+		group.beginCall("read", { path: "missing.txt" }, "read");
+		group.beginCall("grep", { pattern: "needle" }, "grep");
+		group.finalize();
+		group.updateResult({ content: [{ type: "text", text: "file not found" }], isError: true }, false, "read");
+		expect(plain(group)).toContain("✗");
+		group.setGroupExpanded(true);
+		expect(plain(group)).toContain("Read missing.txt");
+		expect(plain(group)).toContain("file not found");
+		expect(plain(group)).toContain("Grep needle");
+	});
+
+	it("shows read previews when enabled without expanding all tool output", () => {
+		const group = new ToolCallGroupComponent({ showReadContentPreview: true });
+		group.beginCall("read", { path: "example.txt" }, "read");
+		group.updateResult({ content: [{ type: "text", text: "preview content" }] }, false, "read");
+		expect(plain(group)).toContain("preview content");
+	});
+
+	it("keeps read output hidden without preview until tool output is expanded", () => {
+		const group = new ToolCallGroupComponent({ showReadContentPreview: false });
+		group.beginCall("read", { path: "example.txt" }, "read");
+		group.updateResult({ content: [{ type: "text", text: "read content" }] }, false, "read");
+		expect(plain(group)).not.toContain("read content");
+		group.setExpanded(true);
+		expect(plain(group)).toContain("read content");
 	});
 
 	it("stays compact with no results even when output expansion is on", () => {

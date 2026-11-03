@@ -55,6 +55,13 @@ export function transcriptEntryMessage(entry: TranscriptEntryLike): AgentMessage
 	return entry.type === "message" ? entry.message : customMessageEntryMessage(entry);
 }
 
+/** Assistant text or an image ends a tool run; thinking does not. */
+export function messageBreaksToolGroup(message: { content: ReadonlyArray<{ type: string; text?: string }> }): boolean {
+	return message.content.some(
+		part => part.type === "image" || (part.type === "text" && (part.text ?? "").trim().length > 0),
+	);
+}
+
 /** Identify user-authored requests among transcript and metadata entries. */
 export function isUserRequestEntry(entry: TranscriptEntryLike | { type: string }): boolean {
 	if (entry.type === "message" && "message" in entry) {

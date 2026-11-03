@@ -8,6 +8,7 @@ import { type Component } from "../tui";
 import { visibleWidth } from "../utils";
 import {
 	isUserRequestEntry,
+	messageBreaksToolGroup,
 	type TranscriptEntryLike as TranscriptEntry,
 	userMessageLabel,
 	userTurnDraft,
@@ -18,7 +19,6 @@ import type { ChatTranscriptBuilder } from "./chat-transcript-builder";
 import { padToWidth } from "../render/utils";
 import { isUsageRowBlock } from "../overlays/usage-row";
 import type { DescribeContext, NativeChild } from "../native/node";
-import { messageBreaksToolGroup } from "./tool-call-group";
 
 /** One selectable transcript item: a message entry plus its rendered block range. */
 export interface OutlineTarget {

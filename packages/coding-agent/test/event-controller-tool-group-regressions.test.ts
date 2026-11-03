@@ -1,6 +1,7 @@
 import { afterEach, beforeAll, beforeEach, describe, expect, it } from "bun:test";
 import type { AssistantMessage, ToolCall } from "@oh-my-pi/pi-ai";
 import { resetSettingsForTest, Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
+import { cfgDisplayShowTokenUsage, cfgTerminalShowImages } from "@oh-my-pi/pi-coding-agent/modes/settings";
 import { EventController } from "@oh-my-pi/pi-coding-agent/modes/controllers/event-controller";
 import type { AgentSessionEvent } from "@oh-my-pi/pi-coding-agent/session/agent-session";
 import {
@@ -12,6 +13,7 @@ import { ToolCallGroupComponent } from "@oh-my-pi/pi-tui/chat/tool-call-group";
 import { ToolExecutionComponent } from "@oh-my-pi/pi-tui/chat/tool-execution";
 import type { NativeNode } from "@oh-my-pi/pi-tui/native/node";
 import { isNativeRendering, setNativeRendering } from "@oh-my-pi/pi-tui/native/state";
+import { TERMINAL } from "@oh-my-pi/pi-tui";
 import { initTheme } from "@oh-my-pi/pi-tui/theme";
 import { createInteractiveModeContext } from "./helpers/interactive-mode-context";
 
@@ -97,6 +99,16 @@ async function finish(controller: EventController, call: ToolCall, isError = fal
 	});
 }
 
+async function finishImage(controller: EventController, call: ToolCall): Promise<void> {
+	await controller.handleEvent({
+		type: "tool_execution_end",
+		toolCallId: call.id,
+		toolName: call.name,
+		result: { content: [{ type: "image", mimeType: "image/png", data: "aQ==" }] },
+		isError: false,
+	});
+}
+
 /** Read the real shell renderer's status nodes without depending on its card wrapper. */
 function nativeRunStates(node: NativeNode): NativeNode[] {
 	const states = node.p?.role === "omp.run.state" ? [node] : [];
@@ -113,7 +125,10 @@ beforeAll(async () => {
 beforeEach(async () => {
 	previousGrouping = chatTranscriptDisplayPreferences.groupConsecutiveTools;
 	resetSettingsForTest();
-	await Settings.init({ inMemory: true, overrides: { "display.smoothStreaming": false } });
+	await Settings.init({
+		inMemory: true,
+		overrides: { "display.smoothStreaming": false, "display.groupConsecutiveTools": true },
+	});
 	setChatTranscriptDisplayPreferences({ groupConsecutiveTools: true });
 });
 
@@ -363,25 +378,285 @@ describe("EventController grouped tool order", () => {
 	});
 
 	for (const streaming of [false, true]) {
-		it(`separates read/bash/read runs in the ${streaming ? "streaming" : "start-only"} path`, async () => {
+		it(`groups mixed reads and built-ins in the ${streaming ? "streaming" : "start-only"} path`, async () => {
 			const { controller, ctx } = createFixture();
-			const calls = [toolCall("first-read", "read"), toolCall("middle-bash"), toolCall("last-read", "read")];
+			const internal: ToolCall = {
+				type: "toolCall",
+				id: "internal",
+				name: "read",
+				arguments: { path: "skill://example" },
+			};
+			const calls = [
+				toolCall("first-read", "read"),
+				toolCall("middle-bash"),
+				internal,
+				toolCall("last-read", "read"),
+			];
 			if (streaming) {
 				await controller.handleEvent({ type: "message_start", message: assistantMessage([]) });
 				await update(controller, calls);
-				await update(controller, [...calls, toolCall("last-bash"), toolCall("last-bash-sibling")]);
-				expect(ctx.pendingTools.get("last-bash")).toBe(ctx.pendingTools.get("last-bash-sibling"));
+				await update(controller, [...calls, toolCall("last-bash")]);
 			} else {
 				for (const call of calls) await start(controller, call);
 			}
-			const readGroups = ctx.chatContainer.children.filter(child => child instanceof ReadToolGroupComponent);
-			expect(readGroups).toHaveLength(2);
-			expect(ctx.pendingTools.get("first-read")).not.toBe(ctx.pendingTools.get("last-read"));
-			const rendered = Bun.stripANSI(ctx.chatContainer.render(120).join("\n"));
+			const group = ctx.pendingTools.get("first-read");
+			expect(group).toBeInstanceOf(ToolCallGroupComponent);
+			for (const call of calls) expect(ctx.pendingTools.get(call.id)).toBe(group);
+			expect(ctx.chatContainer.children.filter(child => child instanceof ReadToolGroupComponent)).toHaveLength(0);
+			if (!(group instanceof ToolCallGroupComponent)) throw new Error("Expected a mixed group");
+			group.setGroupExpanded(true);
+			const rendered = Bun.stripANSI(group.render(120).join("\n"));
 			expect(rendered.indexOf("first-read.ts")).toBeLessThan(rendered.indexOf("middle-bash"));
-			expect(rendered.indexOf("middle-bash")).toBeLessThan(rendered.indexOf("last-read.ts"));
+			expect(rendered.indexOf("middle-bash")).toBeLessThan(rendered.indexOf("skill://example"));
+			expect(rendered.indexOf("skill://example")).toBeLessThan(rendered.indexOf("last-read.ts"));
 		});
 	}
+
+	it("keeps an extension call between separate mixed groups", async () => {
+		const { controller, ctx } = createFixture();
+		ctx.viewSession.hasBuiltInTool = name => name !== "extension";
+		await start(controller, toolCall("before", "read"));
+		await start(controller, toolCall("external", "extension"));
+		await start(controller, toolCall("after", "read"));
+		expect(ctx.pendingTools.get("before")).toBeInstanceOf(ToolCallGroupComponent);
+		expect(ctx.pendingTools.get("external")).toBeInstanceOf(ToolExecutionComponent);
+		expect(ctx.pendingTools.get("after")).not.toBe(ctx.pendingTools.get("before"));
+	});
+
+	for (const imageFirst of [false, true]) {
+		it(`nests read-only usage in its mixed group${imageFirst ? " after an image seals the group" : ""}`, async () => {
+			const { controller, ctx } = createFixture();
+			cfgDisplayShowTokenUsage.set(ctx.settings, true);
+			cfgTerminalShowImages.set(ctx.settings, true);
+			const read = toolCall("usage-read", "read");
+			const message = assistantMessage([read]);
+			message.usage = {
+				input: 1234,
+				output: 7,
+				cacheRead: 0,
+				cacheWrite: 0,
+				totalTokens: 1241,
+				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+			};
+			message.timestamp = new Date(2026, 0, 2, 3, 4, 5).getTime();
+			await controller.handleEvent({ type: "message_start", message: assistantMessage([]) });
+			await update(controller, message.content);
+			const group = ctx.pendingTools.get(read.id);
+			expect(group).toBeInstanceOf(ToolCallGroupComponent);
+			if (imageFirst) {
+				await start(controller, read);
+				await finishImage(controller, read);
+			}
+			await controller.handleEvent({ type: "message_end", message });
+			const usageBlocks = ctx.chatContainer.children.filter(child =>
+				Bun.stripANSI(child.render(120).join("\n")).includes("2026-01-02 03:04:05"),
+			);
+			expect(usageBlocks).toEqual([group!]);
+		});
+	}
+
+	it("keeps mixed-turn usage standalone and starts subsequent tools below it", async () => {
+		const { controller, ctx } = createFixture();
+		cfgDisplayShowTokenUsage.set(ctx.settings, true);
+		const message = assistantMessage([toolCall("before-usage"), toolCall("usage-read", "read")]);
+		message.usage = {
+			input: 1234,
+			output: 7,
+			cacheRead: 0,
+			cacheWrite: 0,
+			totalTokens: 1241,
+			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+		};
+		message.timestamp = new Date(2026, 0, 2, 3, 4, 5).getTime();
+		await controller.handleEvent({ type: "message_start", message: assistantMessage([]) });
+		await update(controller, message.content);
+		const firstGroup = ctx.pendingTools.get("before-usage");
+		await controller.handleEvent({ type: "message_end", message });
+		await start(controller, toolCall("after-usage"));
+		const laterGroup = ctx.pendingTools.get("after-usage");
+		expect(laterGroup).toBeInstanceOf(ToolCallGroupComponent);
+		expect(laterGroup).not.toBe(firstGroup);
+		const usageIndex = ctx.chatContainer.children.findIndex(child =>
+			Bun.stripANSI(child.render(120).join("\n")).includes("2026-01-02 03:04:05"),
+		);
+		expect(usageIndex).toBeGreaterThan(ctx.chatContainer.children.indexOf(firstGroup!));
+		expect(usageIndex).toBeLessThan(ctx.chatContainer.children.indexOf(laterGroup!));
+	});
+
+	it("attaches a held image result from a read within a mixed run", async () => {
+		const protocol = Object.getOwnPropertyDescriptor(TERMINAL, "imageProtocol")!;
+		Object.defineProperty(TERMINAL, "imageProtocol", { value: null });
+		try {
+			const { controller, ctx } = createFixture();
+			cfgTerminalShowImages.set(ctx.settings, true);
+			const read = toolCall("image-read", "read");
+			await controller.handleEvent({ type: "message_start", message: assistantMessage([]) });
+			await controller.handleEvent({
+				type: "tool_execution_end",
+				toolCallId: read.id,
+				toolName: read.name,
+				result: {
+					content: [
+						{
+							type: "image",
+							mimeType: "image/png",
+							data: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8DwHwAFBQIAX8jx0gAAAABJRU5ErkJggg==",
+						},
+					],
+				},
+				isError: false,
+			});
+			await update(controller, [toolCall("before-image"), read, toolCall("after-image")]);
+			const rendered = Bun.stripANSI(ctx.chatContainer.render(120).join("\n"));
+			expect(rendered.match(/\[Image: image\/png\]/g)).toHaveLength(1);
+			expect(ctx.pendingTools.get("before-image")).not.toBe(ctx.pendingTools.get("after-image"));
+			expect(ctx.pendingTools.has(read.id)).toBe(false);
+		} finally {
+			Object.defineProperty(TERMINAL, "imageProtocol", protocol);
+		}
+	});
+
+	it("keeps a streamed read image on its original assistant when execution starts after trailing prose", async () => {
+		const protocol = Object.getOwnPropertyDescriptor(TERMINAL, "imageProtocol")!;
+		Object.defineProperty(TERMINAL, "imageProtocol", { value: null });
+		try {
+			const { controller, ctx } = createFixture();
+			cfgTerminalShowImages.set(ctx.settings, true);
+			const read = toolCall("image-owner", "read");
+			const finalRead = { ...read, arguments: { path: "final-image.png" } };
+			const message = assistantMessage([
+				{ type: "text", text: "BEFORE_READ" },
+				read,
+				{ type: "text", text: "AFTER_READ" },
+			]);
+			await controller.handleEvent({ type: "message_start", message: assistantMessage([]) });
+			const originalAssistant = ctx.streamingComponent!;
+			await update(controller, message.content);
+			await controller.handleEvent({ type: "message_end", message });
+			await start(controller, finalRead);
+			const group = ctx.pendingTools.get(read.id);
+			if (!(group instanceof ToolCallGroupComponent)) throw new Error("Expected a grouped read");
+			expect(Bun.stripANSI(group.render(120).join("\n"))).toContain("final-image.png");
+			await finishImage(controller, finalRead);
+			expect(Bun.stripANSI(originalAssistant.render(120).join("\n"))).toContain("[Image: image/png]");
+			const rendered = Bun.stripANSI(ctx.chatContainer.render(120).join("\n"));
+			expect(rendered.indexOf("[Image: image/png]")).toBeLessThan(rendered.indexOf("AFTER_READ"));
+		} finally {
+			Object.defineProperty(TERMINAL, "imageProtocol", protocol);
+		}
+	});
+
+	it("attaches an image from a same-ID retry to the retry's assistant", async () => {
+		const protocol = Object.getOwnPropertyDescriptor(TERMINAL, "imageProtocol")!;
+		Object.defineProperty(TERMINAL, "imageProtocol", { value: null });
+		try {
+			const { controller, ctx } = createFixture();
+			cfgTerminalShowImages.set(ctx.settings, true);
+			const read = toolCall("retry-image", "read");
+			await controller.handleEvent({ type: "message_start", message: assistantMessage([]) });
+			const firstAssistant = ctx.streamingComponent!;
+			await update(controller, [read]);
+			await controller.handleEvent({ type: "message_end", message: assistantMessage([read]) });
+			await start(controller, read);
+			await finish(controller, read, true);
+			await controller.handleEvent({ type: "agent_end", messages: [] });
+			await controller.handleEvent({ type: "message_start", message: assistantMessage([]) });
+			const retryAssistant = ctx.streamingComponent!;
+			await update(controller, [read]);
+			await controller.handleEvent({ type: "message_end", message: assistantMessage([read]) });
+			await start(controller, read);
+			await finishImage(controller, read);
+			expect(Bun.stripANSI(firstAssistant.render(120).join("\n"))).not.toContain("[Image: image/png]");
+			expect(Bun.stripANSI(retryAssistant.render(120).join("\n"))).toContain("[Image: image/png]");
+		} finally {
+			Object.defineProperty(TERMINAL, "imageProtocol", protocol);
+		}
+	});
+
+	it("keeps a mixed run open after a read image when tool activity is hidden", async () => {
+		const { controller, ctx } = createFixture();
+		ctx.hideToolActivity = true;
+		cfgTerminalShowImages.set(ctx.settings, true);
+		const read = toolCall("hidden-image", "read");
+		await controller.handleEvent({ type: "message_start", message: assistantMessage([]) });
+		await update(controller, [read]);
+		const group = ctx.pendingTools.get(read.id);
+		expect(group).toBeInstanceOf(ToolCallGroupComponent);
+		await start(controller, read);
+		await finishImage(controller, read);
+		await start(controller, toolCall("hidden-sibling"));
+		expect(ctx.pendingTools.get("hidden-sibling")).toBe(group);
+	});
+
+	it("does not break a later run when an earlier read image arrives late", async () => {
+		const { controller, ctx } = createFixture();
+		cfgTerminalShowImages.set(ctx.settings, true);
+		const read = toolCall("late-image", "read");
+		await controller.handleEvent({ type: "message_start", message: assistantMessage([]) });
+		await update(controller, [read, { type: "text", text: "separator" }, toolCall("later")]);
+		await controller.handleEvent({
+			type: "tool_execution_end",
+			toolCallId: read.id,
+			toolName: read.name,
+			result: { content: [{ type: "image", mimeType: "image/png", data: "aQ==" }] },
+			isError: false,
+		});
+		await start(controller, toolCall("later-sibling"));
+		expect(ctx.pendingTools.get("later")).toBe(ctx.pendingTools.get("later-sibling"));
+	});
+
+	it("retries a grouped read without discarding its successful sibling", async () => {
+		const { controller, ctx } = createFixture();
+		ctx.toolGroupExpanded = true;
+		const read = toolCall("retried-read", "read");
+		const sibling = toolCall("successful-sibling");
+		await start(controller, read);
+		await finish(controller, read, true);
+		await start(controller, sibling);
+		await finish(controller, sibling);
+		await controller.handleEvent({ type: "agent_end", messages: [] });
+		await start(controller, read);
+		await finish(controller, read);
+		const rendered = Bun.stripANSI(ctx.chatContainer.render(120).join("\n"));
+		expect(rendered.match(/retried-read.ts/g)).toHaveLength(1);
+		expect(rendered.match(/successful-sibling/g)).toHaveLength(1);
+		expect(rendered).not.toContain("OBSOLETE_FAILURE");
+	});
+
+	it("keeps a late read failure in its original group after a visible boundary", async () => {
+		const { controller, ctx } = createFixture();
+		const read = toolCall("late-read", "read");
+		const sibling = toolCall("sibling");
+		await controller.handleEvent({ type: "message_start", message: assistantMessage([]) });
+		await update(controller, [read, sibling, { type: "text", text: "separator" }, toolCall("next")]);
+		const group = ctx.pendingTools.get(read.id);
+		expect(group).toBeInstanceOf(ToolCallGroupComponent);
+		expect(ctx.pendingTools.get(sibling.id)).toBe(group);
+		expect(ctx.pendingTools.get("next")).not.toBe(group);
+		await finish(controller, read, true);
+		if (!(group instanceof ToolCallGroupComponent)) throw new Error("Expected a mixed group");
+		expect(Bun.stripANSI(group.render(120).join("\n"))).toContain("✗");
+		group.setGroupExpanded(true);
+		expect(Bun.stripANSI(group.render(120).join("\n"))).toContain("OBSOLETE_FAILURE");
+		expect(ctx.pendingTools.get(sibling.id)).toBe(group);
+	});
+
+	it("keeps compact reads and standalone internal URLs when grouping is disabled", async () => {
+		setChatTranscriptDisplayPreferences({ groupConsecutiveTools: false });
+		const { controller, ctx } = createFixture();
+		const first = toolCall("first", "read");
+		const internal: ToolCall = {
+			type: "toolCall",
+			id: "internal",
+			name: "read",
+			arguments: { path: "skill://example" },
+		};
+		await start(controller, first);
+		await start(controller, toolCall("middle"));
+		await start(controller, internal);
+		expect(ctx.pendingTools.get(first.id)).toBeInstanceOf(ReadToolGroupComponent);
+		expect(ctx.pendingTools.get(internal.id)).toBeInstanceOf(ToolExecutionComponent);
+	});
 
 	it("keeps ordinary cards when grouping is disabled", async () => {
 		setChatTranscriptDisplayPreferences({ groupConsecutiveTools: false });

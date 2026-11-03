@@ -557,6 +557,8 @@ export class EventController {
 				ui: this.ctx.ui,
 				cwd: this.ctx.sessionManager.getCwd(),
 				showImages: cfgTerminalShowImages.get(this.ctx.settings),
+				showReadContentPreview: cfgReadToolResultPreview.get(this.ctx.settings),
+				showReadImages: false,
 			});
 			group.setGroupExpanded(this.ctx.toolGroupExpanded);
 			group.setExpanded(this.ctx.toolOutputExpanded);
@@ -710,7 +712,7 @@ export class EventController {
 			args && typeof args === "object" && !Array.isArray(args) ? (args as Record<string, unknown>) : {};
 		this.#readToolCallArgs.set(toolCallId, normalizedArgs);
 		const assistantComponent = this.ctx.streamingComponent ?? this.#lastAssistantComponent;
-		if (assistantComponent) {
+		if (assistantComponent && !this.#readToolCallAssistantComponents.has(toolCallId)) {
 			this.#readToolCallAssistantComponents.set(toolCallId, assistantComponent);
 		}
 	}
@@ -869,8 +871,16 @@ export class EventController {
 		const mediaPath = readMediaPath(result.details);
 		if (images.length === 0 && !mediaPath) return false;
 		assistantComponent.setToolResultImages(toolCallId, images, mediaPath);
+		const visibleImage = images.length > 0 && cfgTerminalShowImages.get(settings);
+		if (
+			visibleImage &&
+			!this.ctx.hideToolActivity &&
+			this.#toolTimelineComponents.get(toolCallId) === this.#lastToolGroup
+		) {
+			this.#resetToolGroup();
+		}
 		// A media-only result (a model, a PDF) still settles through the read group.
-		return images.length > 0 && cfgTerminalShowImages.get(settings);
+		return visibleImage;
 	}
 
 	#insertAfterTranscriptComponent(anchor: Component | undefined, component: Component): boolean {
@@ -1685,7 +1695,9 @@ export class EventController {
 				if (isNew) this.#removePriorTurnToolEntry(content.id);
 				const tool = this.ctx.viewSession.getToolByName(content.name);
 				const renderToolName = toolRenderName(content.name, tool);
-				if (renderToolName === "read") {
+				if (renderToolName === "read" && this.#canGroupToolCall(renderToolName, content.arguments)) {
+					this.#trackReadToolCall(content.id, content.arguments);
+				} else if (renderToolName === "read" && !displayPreferences.groupConsecutiveTools) {
 					if (isNew) this.#resetToolGroup();
 					if (!readArgsHaveTarget(content.arguments)) {
 						// Args still streaming — defer until path is parseable so we can route to the
@@ -1987,12 +1999,13 @@ export class EventController {
 			if (turnUsage) this.#lastAssistantComponent.setTurnUsage(turnUsage);
 			if (cfgDisplayShowTokenUsage.get(settings) && assistantUsageIsBilled(event.message.usage)) {
 				const readCallIds = groupedReadUsageCallIds(event.message);
+				const readToolGroup = readCallIds ? this.#toolTimelineComponents.get(readCallIds[0]!) : undefined;
 				const turnElapsed = cfgDisplayShowTurnTime.get(settings)
 					? turnElapsedMs(this.#turnStartedAt, event.message)
 					: undefined;
 				const usageAttached =
 					readCallIds !== undefined &&
-					(this.#lastReadGroup?.attachUsage(
+					((readToolGroup instanceof ToolCallGroupComponent ? readToolGroup : this.#lastReadGroup)?.attachUsage(
 						readCallIds,
 						event.message.usage,
 						event.message.duration,
@@ -2003,6 +2016,7 @@ export class EventController {
 						false);
 				if (!usageAttached) {
 					this.#resetReadGroup();
+					this.#resetToolGroup();
 					this.ctx.chatContainer.addChild(
 						createUsageRowBlock(
 							event.message.usage,
@@ -2052,9 +2066,16 @@ export class EventController {
 			setRunStatus(blocked);
 		}
 		this.#resolveDisplaceablePoll(renderToolName);
+		if (renderToolName === "read" && this.#canGroupToolCall(renderToolName, event.args)) {
+			this.#trackReadToolCall(event.toolCallId, event.args);
+		}
 		if (!this.ctx.pendingTools.has(event.toolCallId)) {
 			this.#removePriorTurnToolEntry(event.toolCallId);
-			if (renderToolName === "read" && readArgsCollapseIntoGroup(event.args)) {
+			if (
+				!displayPreferences.groupConsecutiveTools &&
+				renderToolName === "read" &&
+				readArgsCollapseIntoGroup(event.args)
+			) {
 				this.#resetToolGroup();
 				this.#trackReadToolCall(event.toolCallId, event.args);
 				if (!this.#toolTimelineComponents.has(event.toolCallId)) {

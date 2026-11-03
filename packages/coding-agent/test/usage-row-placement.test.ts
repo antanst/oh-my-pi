@@ -9,6 +9,11 @@ import type { AssistantMessage } from "@oh-my-pi/pi-ai";
 import { resetSettingsForTest, Settings, settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { ChatTranscriptBuilder } from "@oh-my-pi/pi-tui/chat/chat-transcript-builder";
 import { ReadToolGroupComponent } from "@oh-my-pi/pi-tui/chat/read-tool-group";
+import { ToolCallGroupComponent } from "@oh-my-pi/pi-tui/chat/tool-call-group";
+import {
+	chatTranscriptDisplayPreferences,
+	setChatTranscriptDisplayPreferences,
+} from "@oh-my-pi/pi-tui/chat/display-preferences";
 import { initTheme } from "@oh-my-pi/pi-tui/theme";
 import type { InteractiveModeContext } from "@oh-my-pi/pi-coding-agent/modes/types";
 import { UiHelpers } from "@oh-my-pi/pi-coding-agent/modes/utils/ui-helpers";
@@ -62,7 +67,7 @@ function readTurn(
 	return [assistant, toolResult];
 }
 
-function makeHarness(showTokenUsage: boolean): { ctx: InteractiveModeContext; helpers: UiHelpers } {
+function makeHarness(showTokenUsage: boolean, grouping = false): { ctx: InteractiveModeContext; helpers: UiHelpers } {
 	const ctx = {
 		chatContainer: new Container(),
 		transcriptMessageComponents: new WeakMap(),
@@ -70,11 +75,15 @@ function makeHarness(showTokenUsage: boolean): { ctx: InteractiveModeContext; he
 		ui: { requestRender: vi.fn() },
 		statusLine: { invalidate: vi.fn() },
 		updateEditorBorderColor: vi.fn(),
-		settings: Settings.isolated({ "display.showTokenUsage": showTokenUsage }),
+		settings: Settings.isolated({
+			"display.showTokenUsage": showTokenUsage,
+			"display.groupConsecutiveTools": grouping,
+		}),
 		addMessageToChat: (message: AgentMessage) => helpers.addMessageToChat(message),
 		session: {
 			retryAttempt: 0,
 			getToolByName: () => undefined,
+			hasBuiltInTool: () => true,
 			sessionManager: { getCwd: () => process.cwd() },
 		},
 		get viewSession() {
@@ -129,6 +138,59 @@ describe("UiHelpers.renderSessionContext token-usage row placement", () => {
 		expect(barIndex).toBeLessThan(secondUsageIndex);
 	});
 
+	it("keeps grouped turn usage ordered through group and output expansion", () => {
+		const { ctx, helpers } = makeHarness(true, true);
+		helpers.renderSessionContext({
+			messages: [...readTurn(), ...readTurn("r2", "src/bar.ts", 2121, SECOND_USAGE_TS)],
+		} as SessionContext);
+		const groups = ctx.chatContainer.children.filter(
+			(component): component is ToolCallGroupComponent => component instanceof ToolCallGroupComponent,
+		);
+		expect(groups).toHaveLength(1);
+		const group = groups[0]!;
+		const collapsed = Bun.stripANSI(group.render(120).join("\n"));
+		expect(collapsed).toContain(USAGE_TS_LABEL);
+		expect(collapsed).toContain(SECOND_USAGE_TS_LABEL);
+		expect(ctx.chatContainer.children.filter(c => c.render(120).join("\n").includes(USAGE_LABEL))).toEqual([group]);
+		group.setGroupExpanded(true);
+		group.setExpanded(true);
+		const expanded = Bun.stripANSI(group.render(120).join("\n"));
+		expect(expanded.indexOf("src/foo.ts")).toBeLessThan(expanded.indexOf(USAGE_TS_LABEL));
+		expect(expanded.indexOf(USAGE_TS_LABEL)).toBeLessThan(expanded.indexOf("src/bar.ts"));
+		expect(expanded.indexOf("src/bar.ts")).toBeLessThan(expanded.indexOf(SECOND_USAGE_TS_LABEL));
+		expect(expanded).toContain("line1");
+		expect(expanded.indexOf("line1")).toBeLessThan(expanded.indexOf(USAGE_TS_LABEL));
+	});
+
+	it("keeps mixed-turn usage standalone and separates subsequent grouped reads", () => {
+		const { ctx, helpers } = makeHarness(true, true);
+		const [first, result] = readTurn();
+		const mixed = {
+			...first,
+			content: [
+				...(first as AssistantMessage).content,
+				{ type: "toolCall", id: "b1", name: "bash", arguments: { command: "echo mixed" } },
+			],
+		} as AgentMessage;
+		helpers.renderSessionContext({
+			messages: [mixed, result, ...readTurn("r2", "src/bar.ts", 2121, SECOND_USAGE_TS)],
+		} as SessionContext);
+		const children = ctx.chatContainer.children;
+		const groups = children.filter((c): c is ToolCallGroupComponent => c instanceof ToolCallGroupComponent);
+		expect(groups).toHaveLength(2);
+		const standalone = children.findIndex(c => c !== groups[0] && c.render(120).join("\n").includes(USAGE_LABEL));
+		expect(standalone).toBeGreaterThan(children.indexOf(groups[0]!));
+		expect(standalone).toBeLessThan(children.indexOf(groups[1]!));
+		expect(groups[0]!.render(120).join("\n")).not.toContain(USAGE_LABEL);
+		expect(groups[1]!.render(120).join("\n")).toContain(SECOND_USAGE_TS_LABEL);
+	});
+
+	it("renders no grouped usage when showTokenUsage is off", () => {
+		const { ctx, helpers } = makeHarness(false, true);
+		helpers.renderSessionContext({ messages: readTurn() } as SessionContext);
+		expect(ctx.chatContainer.children.some(c => c.render(120).join("\n").includes(USAGE_LABEL))).toBe(false);
+	});
+
 	it("renders no usage row when showTokenUsage is off", () => {
 		const { ctx, helpers } = makeHarness(false);
 		helpers.renderSessionContext({ messages: readTurn() } as SessionContext);
@@ -137,6 +199,64 @@ describe("UiHelpers.renderSessionContext token-usage row placement", () => {
 		expect(children.some(c => c.render(120).join("\n").includes(USAGE_LABEL))).toBe(false);
 		// Last block is the read group, not a usage row.
 		expect(children[children.length - 1]).toBeInstanceOf(ReadToolGroupComponent);
+	});
+});
+
+describe("ToolCallGroupComponent usage ownership", () => {
+	it("anchors one usage row after the last surviving call and invalidates on changes", () => {
+		const group = new ToolCallGroupComponent();
+		const usage = (readTurn()[0] as AssistantMessage).usage;
+		group.beginCall("read", { path: "one.ts" }, "one");
+		group.beginCall("read", { path: "two.ts" }, "two");
+		group.setGroupExpanded(true);
+		group.render(120);
+		const version = group.getTranscriptBlockVersion();
+		expect(group.attachUsage(["missing"], usage, undefined, undefined, USAGE_TS)).toBe(false);
+		expect(group.attachUsage(["one", "two"], usage, undefined, undefined, USAGE_TS)).toBe(true);
+		expect(group.getTranscriptBlockVersion()).toBeGreaterThan(version);
+		let rendered = Bun.stripANSI(group.render(120).join("\n"));
+		expect(rendered.indexOf("two.ts")).toBeLessThan(rendered.indexOf(USAGE_TS_LABEL));
+		expect(rendered.split(USAGE_TS_LABEL)).toHaveLength(2);
+		group.renameEntry("two", "renamed");
+		group.removeEntry("renamed");
+		rendered = Bun.stripANSI(group.render(120).join("\n"));
+		expect(rendered.indexOf("one.ts")).toBeLessThan(rendered.indexOf(USAGE_TS_LABEL));
+		expect(rendered).toContain(USAGE_TS_LABEL);
+	});
+});
+
+describe("ChatTranscriptBuilder grouped usage placement", () => {
+	it("keeps consecutive read metrics in their group across rebuild and expansion", () => {
+		const previous = { ...chatTranscriptDisplayPreferences };
+		setChatTranscriptDisplayPreferences({ groupConsecutiveTools: true, showTokenUsage: true });
+		try {
+			const builder = new ChatTranscriptBuilder({
+				ui: { requestRender: () => {}, requestComponentRender: () => {} } as unknown as TUI,
+				cwd: process.cwd(),
+				requestRender: () => {},
+			});
+			builder.rebuild(
+				[...readTurn(), ...readTurn("r2", "src/bar.ts", 2121, SECOND_USAGE_TS)].map((message, index) => ({
+					type: "message",
+					id: `g${index}`,
+					parentId: index ? `g${index - 1}` : null,
+					timestamp: new Date(0).toISOString(),
+					message,
+				})),
+			);
+			const groups = builder.container.children.filter(
+				(c): c is ToolCallGroupComponent => c instanceof ToolCallGroupComponent,
+			);
+			expect(groups).toHaveLength(1);
+			builder.setGroupExpanded(true);
+			const rendered = Bun.stripANSI(groups[0]!.render(120).join("\n"));
+			expect(rendered.indexOf("src/foo.ts")).toBeLessThan(rendered.indexOf(USAGE_TS_LABEL));
+			expect(rendered.indexOf(USAGE_TS_LABEL)).toBeLessThan(rendered.indexOf("src/bar.ts"));
+			expect(rendered.indexOf("src/bar.ts")).toBeLessThan(rendered.indexOf(SECOND_USAGE_TS_LABEL));
+			expect(builder.container.children.filter(c => c.render(120).join("\n").includes(USAGE_LABEL))).toEqual(groups);
+		} finally {
+			setChatTranscriptDisplayPreferences(previous);
+		}
 	});
 });
 
